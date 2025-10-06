@@ -1,0 +1,29 @@
+dataset:
+  # your adapter registered as "iqa_pkl" in iqa_pkl_dataset.py
+  format: iqa_pkl
+
+  # create aliases the task/loss look for
+  key_mapping:
+    energy: e_total
+
+  # common options (optional)
+  keep_in_memory: false
+
+  # === splits ===
+  train:
+    src: ~/uni/whk/fairchem-test/dataset
+    enforce_consistent_keys: true
+    key_consistency_check: false
+    ignore_keys: []
+    fill_value_map: {}
+    # unit toggles if needed:
+    angst2au: false
+    ev2ht: false
+
+  val:
+    src: ~/uni/whk/fairchem-test/dataset
+    enforce_consistent_keys: true
+
+  test:
+    src: ~/uni/whk/fairchem-test/dataset
+    enforce_consistent_keys: true
