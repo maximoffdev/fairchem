@@ -133,5 +133,4 @@ docs/core/quacc*/*
 docs/legacy_tutorials/data/*.extxyz
 docs/**.json
 
-*.bak
-runs/*
+
