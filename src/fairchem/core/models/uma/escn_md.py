@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Dict
 
 import torch
 import torch.nn as nn
@@ -804,6 +804,85 @@ class Linear_Energy_Head(nn.Module, HeadInterface):
             raise ValueError(
                 f"reduce can only be sum or mean, user provided: {self.reduce}"
             )
+
+
+# Order must match term naming
+_EDGE_TERMS = ["Vne(A,B)/2","Ven(A,B)/2","Vnn(A,B)/2","VeeC(A,B)/2","VeeX(A,B)/2"]
+
+class IQA_Energy_Head(nn.Module, HeadInterface):
+    """
+    Predict the 5 IQA pairwise interaction terms on edges from UMA node embeddings.
+    Inputs:
+      emb["node_embedding"] : (N, C, ...) from UMA backbone
+      data["edge_index"]    : (2, E)
+      data["edge_vec"] or data["edge_length"] : for optional distance feature
+    """
+    def __init__(self, backbone: eSCNMDBackbone, hidden: int = 256,
+                 use_dist: bool = True, use_Z: bool = False, activation: str = "silu", reduce: str = "sum"):
+        super().__init__()
+        self.use_dist, self.use_Z = use_dist, use_Z
+        C = backbone.sphere_channels
+
+        act = nn.SiLU if activation == "silu" else nn.GELU
+        # Pull a single channel slice like other UMA heads do:
+        # emb["node_embedding"] typically has shape (N, C, ...). We’ll flatten to (N, C).
+        in_dim = 2*C + (1 if use_dist else 0) + (2 if use_Z else 0)
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden), act(),
+            nn.Linear(hidden, hidden), act(),
+            nn.Linear(hidden, len(_EDGE_TERMS)),
+        )
+
+    def _node_feats(self, emb: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # UMA’s backbone puts features under "node_embedding"
+        H = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
+        return H
+
+    def _edge_dist(self, data: AtomicData) -> torch.Tensor:
+        if "edge_length" in data:
+            return data["edge_length"].unsqueeze(-1)
+        if "edge_vec" in data:
+            return data["edge_vec"].norm(dim=-1, keepdim=True)
+        # No distance present -> zeros (still works)
+        E = data["edge_index"].shape[1]
+        return torch.zeros(E, 1, device=data["edge_index"].device)
+
+    def forward(self, data: AtomicData, emb: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        H = self._node_feats(emb)                # (N, C)
+        edge_index = data["edge_index"]          # (2, E)
+        i, j = edge_index[0], edge_index[1]
+
+        feats = [H[i], H[j]]
+        if self.use_dist:
+            feats.append(self._edge_dist(data))
+        if self.use_Z:
+            Zi = data["atomic_numbers"][i].unsqueeze(-1).float()
+            Zj = data["atomic_numbers"][j].unsqueeze(-1).float()
+            feats += [Zi, Zj]
+
+        comps = self.edge_mlp(torch.cat(feats, dim=-1))    # (E, 5) order = [_EDGE_TERMS]
+
+        out: Dict[str, torch.Tensor] = {}
+        # single-stream tensor for training one task:
+        out["pair_components_pred"] = comps                 # (E,5)
+
+        # (optional) also expose individual components if you like:
+        for k, name in enumerate(_EDGE_TERMS):
+            out[f"pair_{name}"] = comps[:, k]               # (E,)
+
+        out["edge_index"] = edge_index
+        # return out
+
+        out = {
+            "pair_components": comps,   # (E,5) keep for logging/analysis
+            "edge_index": edge_index,
+            "pair_Vne_2_pred":  comps[:, 0],
+            "pair_Ven_2_pred":  comps[:, 1],
+            "pair_Vnn_2_pred":  comps[:, 2],
+            "pair_VeeC_2_pred": comps[:, 3],
+            "pair_VeeX_2_pred": comps[:, 4],
+        }
+        return out
 
 
 class Linear_Force_Head(nn.Module, HeadInterface):

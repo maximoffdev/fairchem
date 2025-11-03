@@ -11,17 +11,22 @@ normalizer_rmsd: 1.423
 data:
   tasks_list:
     - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-      name: energy # task name
-      level: system # system-level (not per-atom)
-      property: energy # what we’re learning
-      out_spec: # how to find preds & labels
-        energy:
-          prediction_key: energy # head output key
-          label_key: energy # from your key_mapping: {energy: e_total}
+      name: pair_components # MUST match heads.<this key>
+      level: edge
+      property: pair_components # logical property name
+      out_spec:
+        pair_components:
+          prediction_key: pair_components # from head
+          label_key: pair_components # from dataset (E,5)
+      # loss_fn:
+      #   _target_: torch.nn.MSELoss
       loss_fn:
-        _target_: torch.nn.MSELoss
-        #_partial_: true
-      normalizer: 
+        _target_: fairchem.core.modules.loss.DDPMTLoss
+        loss_fn:
+          _target_: fairchem.core.modules.loss.L2NormLoss
+        reduction: sum
+        #coefficient: ${direct_forces_coef}
+      normalizer:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
         mean: 0.0
         rmsd: ${normalizer_rmsd}
@@ -134,7 +139,7 @@ runner:
         max_neighbors: ${max_neighbors}
         use_pbc: false
       heads:
-        energy:
+        pair_components:
           module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
           reduce: sum
 

@@ -98,199 +98,6 @@ class OnTheFlyPKLDataset(TorchDataset):
         if container.get("energy", None) is None:
             container["energy"] = torch.tensor(0.0)
         return container
-        # N = int(container["natoms"].item()) if isinstance(container["natoms"], torch.Tensor) else int(container["natoms"])
-        # # fixed
-        # fx = container.get("fixed", None)
-        # if fx is None:
-        #     fx = torch.zeros(N, dtype=torch.long)
-        # else:
-        #     fx = torch.as_tensor(fx)
-        #     if fx.dim() == 0:
-        #         fx = fx.view(1)
-        #     if fx.dim() == 2 and fx.shape[-1] == 1:
-        #         fx = fx.view(-1)
-        #     if fx.dim() > 1 and fx.shape[0] != N and fx.numel() == N:
-        #         fx = fx.view(-1)
-        #     fx = fx.to(dtype=torch.long)
-        #     if fx.numel() != N:
-        #         if fx.numel() > N:
-        #             fx = fx[:N]
-        #         else:
-        #             fx = torch.cat([fx, torch.zeros(N - fx.numel(), dtype=torch.long)], dim=0)
-        # container["fixed"] = fx
-        # # tags
-        # tg = container.get("tags", None)
-        # if tg is None:
-        #     tg = torch.zeros(N, dtype=torch.long)
-        # else:
-        #     tg = torch.as_tensor(tg)
-        #     if tg.dim() == 0:
-        #         tg = tg.view(1)
-        #     if tg.dim() == 2 and tg.shape[-1] == 1:
-        #         tg = tg.view(-1)
-        #     if tg.dim() > 1 and tg.shape[0] != N and tg.numel() == N:
-        #         tg = tg.view(-1)
-        #     tg = tg.to(dtype=torch.long)
-        #     if tg.numel() != N:
-        #         if tg.numel() > N:
-        #             tg = tg[:N]
-        #         else:
-        #             tg = torch.cat([tg, torch.zeros(N - tg.numel(), dtype=torch.long)], dim=0)
-        # container["tags"] = tg
-        # # --- final dtype guard for validators: ensure long dtypes ---
-        # for _k in ("fixed", "tags"):
-        #     _v = container.get(_k, None)
-        #     if isinstance(_v, torch.Tensor) and _v.dtype is not torch.long:
-        #         container[_k] = _v.to(torch.long)
-        # z = container.get("atomic_numbers", container.get("z", None))
-        # if z is not None:
-        #     z = torch.as_tensor(z, dtype=torch.long).view(-1)
-        #     if z.numel() != N:
-        #         if z.numel() > N:
-        #             z = z[:N]
-        #         else:
-        #             pad = torch.zeros(N - z.numel(), dtype=torch.long)
-        #             z = torch.cat([z, pad], dim=0)
-        #     container["atomic_numbers"] = z
-        # n = int(nat.item())
-        # # pbc (1,3) bool
-        # pbc = container.get("pbc", torch.tensor([False, False, False], dtype=torch.bool))
-        # pbc = torch.as_tensor(pbc, dtype=torch.bool)
-        # if pbc.dim()==1:
-        #     pbc = pbc.unsqueeze(0)
-        # elif pbc.dim()==2 and pbc.shape[0] != 1:
-        #     pbc = pbc.view(1, -1)
-        # container["pbc"] = pbc
-        # # cell (1,3,3) float32
-        # cell = container.get("cell", torch.zeros(3,3, dtype=_fdtype))
-        # cell = torch.as_tensor(cell, dtype=_fdtype)
-        # if cell.dim()==2: cell = cell.unsqueeze(0)
-        # container["cell"] = cell
-        # # charge (1,) float32
-        # charge = container.get("charge", 0.0)
-        # charge = torch.as_tensor(float(charge), dtype=torch.float32)
-        # if charge.dim()==0: charge = charge.unsqueeze(0)
-        # container["charge"] = charge
-        # # nedges (1,) long
-        # nedges = container.get("nedges", 0)
-        # nedges = torch.as_tensor(int(nedges), dtype=torch.long)
-        # if nedges.dim()==0: nedges = nedges.unsqueeze(0)
-        # container["nedges"] = nedges
-        # # cell_offsets (E,3) float
-        # co = container.get("cell_offsets", None)
-        # if co is None:
-        #     container["cell_offsets"] = torch.zeros(0,3, dtype=_fdtype)
-        # else:
-        #     co = torch.as_tensor(co, dtype=_fdtype)
-        #     if co.dim()==1 and co.numel()==3:
-        #         co = co.unsqueeze(0)
-        #     container["cell_offsets"] = co
-        # # --- ensure graph-edge shapes are internally consistent BEFORE enforcing keys ---
-        # ei = container.get("edge_index", None)
-        # co = container.get("cell_offsets", None)
-        # E = None
-        # if isinstance(ei, torch.Tensor):
-        #     if ei.dtype != torch.long:
-        #         ei = ei.to(torch.long)
-        #     if ei.dim() == 1:
-        #         if ei.numel() == 0:
-        #             ei = ei.reshape(2, 0)
-        #         else:
-        #             if ei.numel() % 2 == 0:
-        #                 ei = ei.view(2, -1)
-        #             else:
-        #                 ei = torch.zeros(2, 0, dtype=torch.long)
-        #     elif ei.dim() == 2:
-        #         if ei.shape[0] == 2:
-        #             pass
-        #         elif ei.shape[1] == 2:
-        #             ei = ei.t().contiguous()
-        #         elif ei.numel() == 0:
-        #             ei = ei.reshape(2, 0)
-        #         else:
-        #             ei = torch.zeros(2, 0, dtype=torch.long)
-        #     else:
-        #         ei = torch.zeros(2, 0, dtype=torch.long)
-        #     container["edge_index"] = ei
-        #     E = int(ei.shape[1])
-        # elif ei is None:
-        #     pass
-        # else:
-        #     container["edge_index"] = torch.zeros(2, 0, dtype=torch.long)
-        #     E = 0
-        # if isinstance(co, torch.Tensor):
-        #     if co.dtype != _fdtype:
-        #         co = co.to(_fdtype)
-        #     if co.dim() == 1:
-        #         if co.numel() == 3:
-        #             co = co.unsqueeze(0)
-        #         elif co.numel() == 0:
-        #             co = torch.zeros(0, 3, dtype=_fdtype)
-        #         else:
-        #             co = torch.zeros(0, 3, dtype=_fdtype)
-        #     elif co.dim() == 2:
-        #         if co.shape[-1] != 3:
-        #             co = torch.zeros(co.shape[0], 3, dtype=_fdtype)
-        #     else:
-        #         co = torch.zeros(0, 3, dtype=_fdtype)
-        #     container["cell_offsets"] = co
-        #     if E is None:
-        #         E = int(co.shape[0])
-        # elif co is None:
-        #     pass
-        # else:
-        #     container["cell_offsets"] = torch.zeros(0, 3, dtype=_fdtype)
-        #     E = 0
-        # if "edge_index" not in container and "cell_offsets" not in container:
-        #     container["edge_index"] = torch.zeros(2, 0, dtype=torch.long)
-        #     container["cell_offsets"] = torch.zeros(0, 3, dtype=_fdtype)
-        #     E = 0
-        # else:
-        #     if "edge_index" not in container:
-        #         E = int(container["cell_offsets"].shape[0]) if E is None else E
-        #         container["edge_index"] = torch.zeros(2, E, dtype=torch.long)
-        #     if "cell_offsets" not in container:
-        #         E = int(container["edge_index"].shape[1]) if E is None else E
-        #         container["cell_offsets"] = torch.zeros(E, 3, dtype=_fdtype)
-        #     Ei = int(container["edge_index"].shape[1])
-        #     Ec = int(container["cell_offsets"].shape[0])
-        #     if Ei != Ec:
-        #         E = Ei if (Ei and not Ec) else Ec if (Ec and not Ei) else 0
-        #         container["edge_index"] = torch.zeros(2, E, dtype=torch.long)
-        #         container["cell_offsets"] = torch.zeros(E, 3, dtype=_fdtype)
-        # E_final = int(container["edge_index"].shape[1])
-        # container["nedges"] = torch.tensor([E_final], dtype=torch.long)
-        # sid = container.get("sid", None)
-        # if sid is None:
-        #     sid = [str(idx) if idx is not None else "0"]
-        # elif isinstance(sid, (int, float)):
-        #     sid = [str(int(sid))]
-        # elif isinstance(sid, (list, tuple)):
-        #     sid = [str(sid[0])] if len(sid) > 0 else ["0"]
-        # elif isinstance(sid, torch.Tensor):
-        #     if sid.numel() > 0:
-        #         sid = [str(sid.flatten()[0].item())]
-        #     else:
-        #         sid = ["0"]
-        # else:
-        #     sid = [str(sid)]
-        # container["sid"] = sid
-        # for key, dtype, default in (("spin", torch.float32, 0.0), ("tags", torch.long, 0), ("fixed", torch.long, 0)):
-        #     v = container.get(key, None)
-        #     if v is None:
-        #         container[key] = torch.full((n,), default, dtype=dtype)
-        #         continue
-        #     v = torch.as_tensor(v, dtype=dtype)
-        #     if v.dim()==0:
-        #         v = v.repeat(n)
-        #     elif v.dim()==2 and v.shape[1]==1:
-        #         v = v.squeeze(1)
-        #     if v.numel()==1:
-        #         v = v.repeat(n)
-        #     assert v.numel()==n, f"{key} length {v.numel()} != natoms {n}"
-        #     container[key] = v
-        # if "num_graphs" in container:
-        #     del container["num_graphs"]
 
 
     def _ensure_sid_vector(self, container, *, idx=None):
@@ -648,139 +455,207 @@ class OnTheFlyPKLDataset(TorchDataset):
         return data
 
 
-# =========================================================================================
-#                                   IQAPKLDataset (adapter)
-# =========================================================================================
+import os
+import pickle
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import torch
+
+# from fairchem.core.datasets import BaseDataset, registry
+from fairchem.core.datasets.atomic_data import AtomicData
+
+# ---- Canonical key mappings ----
+
+PAIR_KEYS_PKL_TO_CANON = {
+    "V_IQA_Inter(A,B)/2": "pair_E_inter_2",  # (E,) total interatomic / 2
+    "Vne(A,B)/2":         "pair_Vne_2",
+    "Ven(A,B)/2":         "pair_Ven_2",
+    "Vnn(A,B)/2":         "pair_Vnn_2",
+    "VeeC(A,B)/2":        "pair_VeeC_2",
+    "VeeX(A,B)/2":        "pair_VeeX_2",
+}
+
+SYSTEM_KEYS_PKL_TO_CANON = {
+    "e_total": "energy",  # 0-D scalar per system (will become shape [1])
+}
+
+# ---- helpers (self-contained) ----
+
+def _to_mapping(sample: Any) -> Dict[str, Any]:
+    if isinstance(sample, dict):
+        return sample
+    if hasattr(sample, "keys") and callable(getattr(sample, "keys")):
+        try:
+            keys = list(sample.keys())
+            return {k: getattr(sample, k) for k in keys}
+        except Exception:
+            pass
+    out = {}
+    for k in dir(sample):
+        if k.startswith("_"):
+            continue
+        try:
+            v = getattr(sample, k)
+        except Exception:
+            continue
+        if callable(v):
+            continue
+        out[k] = v
+    return out
+
+def _first_present(d: Dict[str, Any], *cands: str):
+    for k in cands:
+        if k in d:
+            return d[k]
+    return None
+
+def _require(d: Dict[str, Any], logical: str, *cands: str):
+    v = _first_present(d, *cands)
+    if v is None:
+        avail = sorted(list(d.keys()))
+        raise KeyError(
+            f"Required key '{logical}' missing. Tried aliases {cands}. "
+            f"Available keys (first 50): {avail[:50]}{' ...' if len(avail) > 50 else ''}"
+        )
+    return v
+
+def _tensor1d(x: Any) -> Optional[torch.Tensor]:
+    if x is None:
+        return None
+    t = torch.as_tensor(x)
+    if t.ndim == 2 and t.shape[1] == 1:
+        t = t.squeeze(-1)
+    return t
+
+
 @registry.register_dataset("iqa_pkl")
 class IQAPKLDataset(BaseDataset):
     """
-    ASE-style PKL dataset: reads .pkl files, returns AtomicData objects, fills missing fields with zeros/defaults.
+    PKL dataset for IQA training:
+    - Loads files from a directory.
+    - Exposes system-level & per-edge labels under canonical, slash-free keys.
+    - Returns AtomicData with exactly the fields it expects.
     """
-    def __init__(self, src, key_mapping=None, keep_in_memory=False, **kwargs):
-        super().__init__({})
-        import os
-        src_path = os.path.abspath(os.path.expanduser(os.path.expandvars(src)))
-        if os.path.isdir(src_path):
-            self.file_paths = sorted([
-                os.path.join(src_path, f) for f in os.listdir(src_path)
-                if f.lower().endswith((".pkl", ".pickle"))
-            ])
-            self.paths = [Path(src_path)]  # <-- ensure paths is set for metadata
-        elif os.path.isfile(src_path) and src_path.lower().endswith((".pkl", ".pickle")):
-            self.file_paths = [src_path]
-            self.paths = [Path(os.path.dirname(src_path))]  # <-- ensure paths is set for metadata
-        else:
-            raise ValueError(f"[IQAPKLDataset] bad 'src': {src}")
-        if not self.file_paths:
-            raise FileNotFoundError(f"[PKL] No .pkl files found in {src}")
-        self.num_samples = len(self.file_paths)
+
+    def __init__(
+        self,
+        src: str,
+        enforce_consistent_keys: bool = True,
+        key_mapping: Optional[Dict[str, str]] = None,
+        name: str = "iqa_pkl",
+        allow_missing_labels: bool = False,
+    ) -> None:
+        super().__init__({})  # BaseDataset wants a config object; empty is fine
+        self.src = Path(src)
+        self.enforce_consistent_keys = enforce_consistent_keys
         self.key_mapping = key_mapping or {}
-        self.keep_in_memory = bool(keep_in_memory)
-        self._cache = None
-        if self.keep_in_memory:
-            self._cache = [self._get_atomicdata(i) for i in range(self.num_samples)]
-        
-        self.name = kwargs.get("name", "iqa_pkl")
-        self.dataset_name = self.name
-        self.dataset_names = [self.name]
+        self.allow_missing_labels = allow_missing_labels
 
-    def __len__(self):
-        return self.num_samples
+        self.name = name
+        self.dataset_name = name
+        self.dataset_names = [name]
 
-    def __getitem__(self, idx):
-        if self._cache is not None:
-            return self._cache[idx]
-        return self._get_atomicdata(idx)
+        self.paths: List[Path] = [self.src]
+        self.file_paths: List[str] = []
+        for root, _, fnames in os.walk(self.src):
+            for fn in fnames:
+                if fn.endswith(".pkl"):
+                    p = Path(root) / fn
+                    if p.stat().st_size > 0:
+                        self.file_paths.append(str(p))
+        self.file_paths.sort()
+        if not self.file_paths:
+            raise FileNotFoundError(f"No .pkl files found under {self.src}")
 
-    def _get_atomicdata(self, idx):
-        # Load raw sample
-        import torch
-        import numpy as np
-        import pickle
-        from fairchem.core.datasets._utils import rename_data_object_keys
-        from fairchem.core.datasets.atomic_data import AtomicData
-        raw = None
-        with open(self.file_paths[idx], "rb") as f:
+        if self.enforce_consistent_keys:
+            with open(self.file_paths[0], "rb") as f:
+                s0 = pickle.load(f)
+            _ = self._extract_available_keys(s0)
+
+    def __len__(self) -> int:
+        return len(self.file_paths)
+
+    def _extract_available_keys(self, sample: Any) -> Dict[str, bool]:
+        d = _to_mapping(sample)
+        _ = _require(d, "pos", "pos", "positions", "R")
+        _ = _require(d, "atomic_numbers", "atomic_numbers", "Z", "z", "numbers")
+        _ = _require(d, "edge_index", "edge_index", "edges")
+        return {k: True for k in d.keys()}
+
+    def __getitem__(self, idx: int) -> AtomicData:
+        path = self.file_paths[idx]
+        with open(path, "rb") as f:
             raw = pickle.load(f)
-        # Convert to dict if needed
-        if hasattr(raw, "to_dict"):
-            sample = raw.to_dict()
-        elif isinstance(raw, dict):
-            sample = dict(raw)
-        else:
-            sample = dict(raw)
-        # Apply key mapping (like ASE)
-        if self.key_mapping:
-            sample = rename_data_object_keys(sample, self.key_mapping)
-        # Ensure 'energy' is present if 'e_total' is present
-        if 'energy' not in sample and 'e_total' in sample:
-            sample['energy'] = sample['e_total']
-        # Ensure energy is always present (default to 0.0 if missing)
-        if 'energy' not in sample or sample['energy'] is None:
-            sample['energy'] = 0.0
-        # Required fields
-        natoms = sample["pos"].shape[0] if "pos" in sample else 1
-        def get(key, default):
-            v = sample.get(key, None)
-            if v is not None:
-                return v
-            if callable(default):
-                return default()
-            return default
-        pos = torch.as_tensor(get("pos", lambda: torch.zeros((natoms, 3), dtype=torch.float32)))
-        atomic_numbers = torch.as_tensor(get("atomic_numbers", lambda: torch.ones(natoms, dtype=torch.long)), dtype=torch.long)
-        cell = torch.as_tensor(get("cell", lambda: torch.zeros((1, 3, 3), dtype=pos.dtype)))
-        pbc = torch.as_tensor(get("pbc", lambda: torch.zeros((1, 3), dtype=torch.bool)))
-        natoms_t = torch.as_tensor(get("natoms", lambda: torch.tensor([natoms], dtype=torch.long)))
-        edge_index = torch.as_tensor(get("edge_index", lambda: torch.zeros((2, 0), dtype=torch.long)))
-        cell_offsets = torch.as_tensor(get("cell_offsets", lambda: torch.zeros((0, 3), dtype=pos.dtype)))
-        # Ensure cell_offsets and edge_index have matching number of edges
-        num_edges = edge_index.shape[1]
-        if cell_offsets.shape[0] != num_edges:
-            if num_edges == 0:
-                cell_offsets = torch.zeros((0, 3), dtype=cell_offsets.dtype)
-            else:
-                if cell_offsets.shape[0] > num_edges:
-                    cell_offsets = cell_offsets[:num_edges]
-                else:
-                    pad = torch.zeros((num_edges - cell_offsets.shape[0], 3), dtype=cell_offsets.dtype)
-                    cell_offsets = torch.cat([cell_offsets, pad], dim=0)
-        nedges = torch.as_tensor(get("nedges", lambda: torch.tensor([edge_index.shape[1]], dtype=torch.long)))
-        charge = torch.as_tensor(get("charge", lambda: torch.zeros(1, dtype=torch.float32)))
-        spin = torch.as_tensor(get("spin", lambda: torch.zeros(1, dtype=torch.float32)))
-        fixed = torch.as_tensor(get("fixed", lambda: torch.zeros(natoms, dtype=torch.long)), dtype=torch.long)
-        tags = torch.as_tensor(get("tags", lambda: torch.zeros(natoms, dtype=torch.long)), dtype=torch.long)
-        energy = sample.get("energy", None)
-        if energy is not None:
-            energy = torch.as_tensor(energy)
-            if energy.dim() == 0:
-                energy = energy.unsqueeze(0)
-        forces = sample.get("forces", None)
-        if forces is not None:
-            forces = torch.as_tensor(forces)
-        stress = sample.get("stress", None)
-        if stress is not None:
-            stress = torch.as_tensor(stress)
-            if stress.dim() == 2:
-                stress = stress.unsqueeze(0)
-        batch = None  # let AtomicData handle default
-        sid = sample.get("sid", [str(idx)])
-        if isinstance(sid, str):
-            sid = [sid]
-        elif not isinstance(sid, list):
-            sid = [str(sid)]
-        dataset = sample.get("dataset", None)
-        if dataset is None:
-            dataset = 'iqa_pkl'
-        if not isinstance(dataset, str):
-            dataset = str(dataset)
-        dataset_name = dataset
-        data = AtomicData(
+        d = _to_mapping(raw)
+
+        # --- base graph (strict shapes/dtypes) ---
+        pos = torch.as_tensor(_require(d, "pos", "pos", "positions", "R"),
+                              dtype=torch.get_default_dtype())          # (N,3)
+        Z = torch.as_tensor(_require(d, "atomic_numbers", "atomic_numbers", "Z", "z", "numbers"),
+                            dtype=torch.long).view(-1)                  # (N,)
+        edge_index = torch.as_tensor(_require(d, "edge_index", "edge_index", "edges"),
+                                     dtype=torch.long)                  # (2,E)
+        N = int(pos.shape[0]); E = int(edge_index.shape[1])
+
+        # optional helpers the head may use
+        edge_vec    = _first_present(d, "edge_vec")
+        edge_length = _first_present(d, "edge_length")
+        if edge_vec is not None:    edge_vec = torch.as_tensor(edge_vec)
+        if edge_length is not None: edge_length = torch.as_tensor(edge_length)
+
+        # --- labels (system + edge) ---
+        labels: Dict[str, torch.Tensor] = {}
+
+        # system energy (scalar -> [1])
+        for src_key, canon in SYSTEM_KEYS_PKL_TO_CANON.items():
+            if src_key in d:
+                labels[canon] = torch.as_tensor(d[src_key], dtype=pos.dtype).view(1)
+
+        # user key mapping (e.g., {"energy": "e_total"})
+        for out_key, in_key in self.key_mapping.items():
+            if in_key in d:
+                t = torch.as_tensor(d[in_key], dtype=pos.dtype)
+                labels[out_key] = t.view(1) if t.ndim == 0 else _tensor1d(t)
+
+        # per-edge IQA components -> (E,)
+        for pkl_key, canon in PAIR_KEYS_PKL_TO_CANON.items():
+            if pkl_key in d:
+                t1 = _tensor1d(d[pkl_key])
+                if t1 is None:
+                    continue
+                if t1.numel() != E:
+                    raise ValueError(
+                        f"Edge label '{pkl_key}' len={t1.numel()} != E={E} for {os.path.basename(path)}"
+                    )
+                labels[canon] = t1.to(pos.dtype)
+
+        # stack (E,5) for one-task training
+        want = ["pair_Vne_2", "pair_Ven_2", "pair_Vnn_2", "pair_VeeC_2", "pair_VeeX_2"]
+        if all(k in labels for k in want):
+            labels["pair_components"] = torch.stack([labels[k] for k in want], dim=-1)  # (E,5)
+
+        # --- build a VALID AtomicData (constructor accepts only fixed fields) ---
+        # For non-PBC molecules, give zeros cell/pbc/offsets and fillers for required fields:
+        cell = torch.zeros(1, 3, 3, dtype=pos.dtype)
+        pbc  = torch.zeros(1, 3, dtype=torch.bool)
+        cell_offsets = torch.zeros(E, 3, dtype=pos.dtype)
+        nedges = torch.tensor([E], dtype=torch.long)
+        natoms = torch.tensor([N], dtype=torch.long)
+        charge = torch.zeros(1, dtype=torch.long)   # system charge (int)
+        spin   = torch.zeros(1, dtype=torch.long)   # system spin (int)
+        fixed  = torch.zeros(N, dtype=torch.long)   # per-node flags
+        tags   = torch.zeros(N, dtype=torch.long)   # per-node tags
+
+        energy = labels.get("energy", None)
+        # forces/stress aren’t in your PKLs; leave None
+        ad = AtomicData(
             pos=pos,
-            atomic_numbers=atomic_numbers,
+            atomic_numbers=Z,
             cell=cell,
             pbc=pbc,
-            natoms=natoms_t,
+            natoms=natoms,
             edge_index=edge_index,
             cell_offsets=cell_offsets,
             nedges=nedges,
@@ -788,44 +663,72 @@ class IQAPKLDataset(BaseDataset):
             spin=spin,
             fixed=fixed,
             tags=tags,
-            energy=energy,
-            forces=forces,
-            stress=stress,
-            batch=batch,
-            sid=sid,
-            dataset=dataset,
+            energy=energy if energy is not None else None,  # (1,)
+            forces=None,
+            stress=None,
+            batch=None,
+            sid=str(idx),
+            dataset=self.name,
         )
-        data.dataset_name = dataset_name
-        data.validate()
-        return data
+
+        # --- NOW attach extras (constructor won’t take them) ---
+        if edge_vec is not None:
+            ad.edge_vec = edge_vec
+        if edge_length is not None:
+            ad.edge_length = edge_length
+
+        # pairwise labels (ok to add arbitrary fields after init)
+        if "pair_E_inter_2" in labels:
+            ad.pair_E_inter_2 = labels["pair_E_inter_2"]   # (E,)
+        if "pair_components" in labels:
+            ad.pair_components = labels["pair_components"] # (E,5)
+        
+        ad.pair_Vne_2 = labels["pair_Vne_2"]
+        ad.pair_Ven_2 = labels["pair_Ven_2"]
+        ad.pair_Vnn_2 = labels["pair_Vnn_2"]
+        ad.pair_VeeC_2 = labels["pair_VeeC_2"]
+        ad.pair_VeeX_2 = labels["pair_VeeX_2"]
+
+        ad.dataset_name = self.name
+
+        # If you still want the 5 individual scalars accessible (optional):
+        # for k in want:
+        #     if k in labels:
+        #         setattr(ad, k, labels[k])
+
+        # sanity: at least one label unless allow_missing_labels
+        if not self.allow_missing_labels:
+            has_any = ("energy" in ad.__dict__) or ("pair_components" in ad.__dict__) or ("pair_E_inter_2" in ad.__dict__)
+            if not has_any:
+                raise KeyError(f"No labels found in {path}")
+
+        return ad
 
     @property
     def metadata(self):
         # Look for metadata.npz in the data directory
         if not self.file_paths:
             raise RuntimeError("No PKL files found for metadata lookup.")
-        meta_path = os.path.join(os.path.dirname(self.file_paths[0]), "metadata.npz")
+        first_dir = os.path.dirname(self.file_paths[0])
+        meta_path = os.path.join(first_dir, "metadata.npz")
         if not os.path.exists(meta_path):
-            # Create metadata.npz if it doesn't exist
-            write_minimal_metadata(os.path.dirname(self.file_paths[0]), self.file_paths)
+            natoms = []
+            filenames = []
+            for p in self.file_paths:
+                try:
+                    with open(p, "rb") as f:
+                        s = pickle.load(f)
+                    m = _to_mapping(s)
+                    pos = _require(m, "pos", "pos", "positions", "R")
+                    n = int(torch.as_tensor(pos).shape[0])
+                except Exception:
+                    n = 0
+                natoms.append(n)
+                filenames.append(os.path.relpath(p, first_dir))
+            np.savez(meta_path, natoms=np.array(natoms, dtype=np.int64), filenames=np.array(filenames))
         meta = np.load(meta_path)
-        if "natoms" not in meta or len(meta["natoms"]) == 0:
-            raise RuntimeError(f"metadata.npz at {meta_path} is missing 'natoms' or is empty. Please check your PKL files and rerun.")
+        if ("natoms" not in getattr(meta, "files", [])) or len(meta["natoms"]) == 0:
+            raise RuntimeError(
+                f"metadata.npz at {meta_path} is missing 'natoms' or is empty. Please check your PKL files and rerun."
+            )
         return meta
-
-
-# class SafeMSELoss(torch.nn.Module):
-#     """A wrapper for torch.nn.MSELoss that ignores extra keyword arguments (e.g., mult_mask) and avoids ambiguous bools."""
-#     def __init__(self, *args, **kwargs):
-#         # Only pass valid args to MSELoss and avoid any torch.Tensor bools or ambiguous bools
-#         valid_keys = [
-#             'size_average', 'reduce', 'reduction'
-#         ]
-#         filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_keys and not isinstance(v, torch.Tensor) and not isinstance(v, (list, tuple, dict))}
-#         super().__init__()
-#         self.loss = torch.nn.MSELoss(*args, **filtered_kwargs)
-
-#     def forward(self, input, target, *args, **kwargs):
-#         # Ignore extra args/kwargs, and avoid ambiguous bools
-#         return self.loss(input, target)
-
