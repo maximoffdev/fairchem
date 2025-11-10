@@ -11,13 +11,13 @@ normalizer_rmsd: 1.423
 data:
   tasks_list:
     - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-      name: pair_components # MUST match heads.<this key>
-      level: edge
-      property: pair_components # logical property name
+      name: energy # MUST match heads.<this key>
+      level: atom
+      property: e_iqa_a # logical property name
       out_spec:
-        pair_components:
-          prediction_key: pair_components # from head
-          label_key: pair_components # from dataset (E,5)
+        energy:
+          prediction_key: e_iqa_a
+          label_key: e_iqa_a
       # loss_fn:
       #   _target_: torch.nn.MSELoss
       loss_fn:
@@ -46,12 +46,14 @@ data:
     # If your PKL energy key is 'e_total', expose an alias 'energy' here:
     key_mapping:
       energy: e_total
+      e_iqa_a: E_IQA(A)
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
     src: /home/lukas/uni/whk/fairchem-test/dataset # <-- change me
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
+      e_iqa_a: E_IQA(A)
 
 # dataloader knobs (referenced)
 batch_size: 8
@@ -139,8 +141,8 @@ runner:
         max_neighbors: ${max_neighbors}
         use_pbc: false
       heads:
-        pair_components:
-          module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+        energy:
+          module: fairchem.core.models.uma.escn_md.Linear_Energy_Head
           reduce: sum
 
     optimizer_fn:

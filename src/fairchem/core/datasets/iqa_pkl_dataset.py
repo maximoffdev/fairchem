@@ -469,12 +469,14 @@ from fairchem.core.datasets.atomic_data import AtomicData
 # ---- Canonical key mappings ----
 
 PAIR_KEYS_PKL_TO_CANON = {
-    "V_IQA_Inter(A,B)/2": "pair_E_inter_2",  # (E,) total interatomic / 2
-    "Vne(A,B)/2":         "pair_Vne_2",
-    "Ven(A,B)/2":         "pair_Ven_2",
-    "Vnn(A,B)/2":         "pair_Vnn_2",
-    "VeeC(A,B)/2":        "pair_VeeC_2",
-    "VeeX(A,B)/2":        "pair_VeeX_2",
+    # "V_IQA_Inter(A,B)/2": "pair_E_inter_2",  # (E,) total interatomic / 2
+    # "Vne(A,B)/2":         "pair_Vne_2",
+    # "Ven(A,B)/2":         "pair_Ven_2",
+    # "Vnn(A,B)/2":         "pair_Vnn_2",
+    # "VeeC(A,B)/2":        "pair_VeeC_2",
+    # "VeeX(A,B)/2":        "pair_VeeX_2",
+    # "E_IQA(A)":           "e_iqa_a",
+
 }
 
 SYSTEM_KEYS_PKL_TO_CANON = {
@@ -632,9 +634,10 @@ class IQAPKLDataset(BaseDataset):
                 labels[canon] = t1.to(pos.dtype)
 
         # stack (E,5) for one-task training
-        want = ["pair_Vne_2", "pair_Ven_2", "pair_Vnn_2", "pair_VeeC_2", "pair_VeeX_2"]
-        if all(k in labels for k in want):
-            labels["pair_components"] = torch.stack([labels[k] for k in want], dim=-1)  # (E,5)
+        #want = ["pair_Vne_2", "pair_Ven_2", "pair_Vnn_2", "pair_VeeC_2", "pair_VeeX_2"]
+        # want = ["e_iqa_a"]
+        # if all(k in labels for k in want):
+        #     labels["pair_components"] = torch.stack([labels[k] for k in want], dim=-1)  # (E,5)
 
         # --- build a VALID AtomicData (constructor accepts only fixed fields) ---
         # For non-PBC molecules, give zeros cell/pbc/offsets and fillers for required fields:
@@ -671,36 +674,38 @@ class IQAPKLDataset(BaseDataset):
             dataset=self.name,
         )
 
-        # --- NOW attach extras (constructor won’t take them) ---
-        if edge_vec is not None:
-            ad.edge_vec = edge_vec
-        if edge_length is not None:
-            ad.edge_length = edge_length
+        # # --- NOW attach extras (constructor won’t take them) ---
+        # if edge_vec is not None:
+        #     ad.edge_vec = edge_vec
+        # if edge_length is not None:
+        #     ad.edge_length = edge_length
 
-        # pairwise labels (ok to add arbitrary fields after init)
-        if "pair_E_inter_2" in labels:
-            ad.pair_E_inter_2 = labels["pair_E_inter_2"]   # (E,)
-        if "pair_components" in labels:
-            ad.pair_components = labels["pair_components"] # (E,5)
+        # # pairwise labels (ok to add arbitrary fields after init)
+        # if "pair_E_inter_2" in labels:
+        #     ad.pair_E_inter_2 = labels["pair_E_inter_2"]   # (E,)
+        # if "pair_components" in labels:
+        #     ad.pair_components = labels["pair_components"] # (E,5)
         
-        ad.pair_Vne_2 = labels["pair_Vne_2"]
-        ad.pair_Ven_2 = labels["pair_Ven_2"]
-        ad.pair_Vnn_2 = labels["pair_Vnn_2"]
-        ad.pair_VeeC_2 = labels["pair_VeeC_2"]
-        ad.pair_VeeX_2 = labels["pair_VeeX_2"]
+        # ad.pair_Vne_2 = labels["pair_Vne_2"]
+        # ad.pair_Ven_2 = labels["pair_Ven_2"]
+        # ad.pair_Vnn_2 = labels["pair_Vnn_2"]
+        # ad.pair_VeeC_2 = labels["pair_VeeC_2"]
+        # ad.pair_VeeX_2 = labels["pair_VeeX_2"]
 
         ad.dataset_name = self.name
+        if "e_iqa_a" in labels:
+            ad.e_iqa_a = labels["e_iqa_a"]  # (E,)
 
         # If you still want the 5 individual scalars accessible (optional):
         # for k in want:
         #     if k in labels:
         #         setattr(ad, k, labels[k])
 
-        # sanity: at least one label unless allow_missing_labels
-        if not self.allow_missing_labels:
-            has_any = ("energy" in ad.__dict__) or ("pair_components" in ad.__dict__) or ("pair_E_inter_2" in ad.__dict__)
-            if not has_any:
-                raise KeyError(f"No labels found in {path}")
+        # # sanity: at least one label unless allow_missing_labels
+        # if not self.allow_missing_labels:
+        #     has_any = ("energy" in ad.__dict__) or ("pair_components" in ad.__dict__) or ("pair_E_inter_2" in ad.__dict__)
+        #     if not has_any:
+        #         raise KeyError(f"No labels found in {path}")
 
         return ad
 
