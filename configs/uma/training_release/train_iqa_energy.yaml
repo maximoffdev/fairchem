@@ -11,20 +11,23 @@ normalizer_rmsd: 1.423
 data:
   tasks_list:
     - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-      name: energy # MUST match heads.<this key>
+      name: e_iqa_a # MUST match heads.<this key>
       level: atom
       property: e_iqa_a # logical property name
       out_spec:
-        energy:
+        e_iqa_a:
           prediction_key: e_iqa_a
           label_key: e_iqa_a
-      # loss_fn:
-      #   _target_: torch.nn.MSELoss
       loss_fn:
         _target_: fairchem.core.modules.loss.DDPMTLoss
         loss_fn:
-          _target_: fairchem.core.modules.loss.L2NormLoss
-        reduction: sum
+          _target_: fairchem.core.modules.loss.MSELoss
+        reduction: mean
+      # loss_fn:
+      #   _target_: fairchem.core.modules.loss.DDPMTLoss
+      #   loss_fn:
+      #     _target_: fairchem.core.modules.loss.L2NormLoss
+      #   reduction: sum
         #coefficient: ${direct_forces_coef}
       normalizer:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
@@ -41,7 +44,7 @@ data:
   # dataset kwargs used below
   train_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/fairchem-test/dataset # <-- change me
+    src: /home/lukas/uni/whk/testing/train # <-- change me
     enforce_consistent_keys: true
     # If your PKL energy key is 'e_total', expose an alias 'energy' here:
     key_mapping:
@@ -49,7 +52,7 @@ data:
       e_iqa_a: E_IQA(A)
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/fairchem-test/dataset # <-- change me
+    src: /home/lukas/uni/whk/testing/train # <-- change me
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
@@ -61,7 +64,7 @@ num_workers: 0
 max_neighbors: 128
 
 # training knobs (referenced)
-epochs: 100
+epochs: 3
 steps: null
 lr: 1.0e-4
 weight_decay: 1.0e-5
@@ -72,7 +75,7 @@ weight_decay: 1.0e-5
 # Required top-level keys for FAIRChem CLI
 # --------------------------------
 job:
-  device_type: CPU
+  device_type: CUDA
   debug: true
   scheduler:
     mode: LOCAL
@@ -141,8 +144,8 @@ runner:
         max_neighbors: ${max_neighbors}
         use_pbc: false
       heads:
-        energy:
-          module: fairchem.core.models.uma.escn_md.Linear_Energy_Head
+        e_iqa_a:
+          module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
           reduce: sum
 
     optimizer_fn:

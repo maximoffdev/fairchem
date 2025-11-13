@@ -268,14 +268,13 @@ def compute_loss(
 
         # Setting up a mult_mask to multiply the loss by 1 for valid atoms
         # or structures, and by 0 for the others. This is better than
-        # indexing the loss with the mask, becSause it ensures that the
+        # indexing the loss with the mask, because it ensures that the
         # computational graph is correct.
 
         # this is related to how Hydra outputs stuff in nested dicts:
         # ie: oc20_energy.energy
         pred_for_task = predictions[task.name][task.property]
         if task.level == "atom":
-            print(pred_for_task.shape, num_atoms_in_batch)
             pred_for_task = pred_for_task.view(num_atoms_in_batch, -1)
         elif task.level == "edge":
             pass
@@ -706,7 +705,6 @@ class MLIPTrainEvalUnit(
                 with record_function("forward"):
                     pred = self.model.forward(batch_on_device)
                 with record_function("compute_loss"):
-                    print("TASKS:", self.tasks, "PRED:", pred, "BATCH:", batch_on_device)
                     loss_dict = compute_loss(self.tasks, pred, batch_on_device)
             scalar_loss = sum(loss_dict.values())
             self.optimizer.zero_grad()

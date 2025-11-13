@@ -737,3 +737,33 @@ class IQAPKLDataset(BaseDataset):
                 f"metadata.npz at {meta_path} is missing 'natoms' or is empty. Please check your PKL files and rerun."
             )
         return meta
+
+    # --- Added helpers so BalancedBatchSampler can probe/generate metadata ---
+    def metadata_hasattr(self, attr: str) -> bool:
+        """Return True if metadata.npz contains `name`. Ensures metadata is created if missing."""
+        if not self.file_paths:
+            return False
+        first_dir = os.path.dirname(self.file_paths[0])
+        meta_path = os.path.join(first_dir, "metadata.npz")
+        if not os.path.exists(meta_path):
+            # property will generate metadata.npz or raise
+            try:
+                _ = self.metadata
+            except Exception:
+                return False
+        try:
+            meta = np.load(meta_path)
+            return attr in getattr(meta, "files", [])
+        except Exception:
+            return False
+
+    def get_metadata(self, attr: str, idx: Optional[Iterable[int]] = None):
+        """Return metadata[name] or metadata[name][indices] (numpy array)."""
+        meta = self.metadata  # ensures file exists and validated
+        if attr not in getattr(meta, "files", []):
+            raise KeyError(f"metadata has no key '{attr}'")
+        arr = np.array(meta[attr])
+        if idx is None:
+            return arr
+        idx = np.asarray(list(idx), dtype=int)
+        return arr[idx]
