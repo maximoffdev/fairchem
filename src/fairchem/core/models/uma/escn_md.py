@@ -826,8 +826,14 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         # emb["node_embedding"]: (N, C, ...)
         x = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
         e = self.mlp(x).squeeze(-1)                           # (N,)
-
-        return {"e_iqa_a": e}
+        if self.reduce == "sum":
+            return {"e_iqa_a": e}
+        elif self.reduce == "mean":
+            n_atoms = data["natoms"].unsqueeze(-1)            # (B, 1)
+            e = e / n_atoms[data["batch"]]                    # (N,)
+            return {"e_iqa_a": e}
+        else:
+            raise ValueError(f"reduce can only be sum or mean, user provided: {self.reduce}")
 
 
 

@@ -44,7 +44,7 @@ data:
   # dataset kwargs used below
   train_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/testing/train # <-- change me
+    src: /home/lukas/uni/whk/testing2/train # <-- change me
     enforce_consistent_keys: true
     # If your PKL energy key is 'e_total', expose an alias 'energy' here:
     key_mapping:
@@ -52,19 +52,19 @@ data:
       e_iqa_a: E_IQA(A)
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/testing/train # <-- change me
+    src: /home/lukas/uni/whk/testing2/test # <-- change me
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
       e_iqa_a: E_IQA(A)
 
 # dataloader knobs (referenced)
-batch_size: 8
+batch_size: 32
 num_workers: 0
 max_neighbors: 128
 
 # training knobs (referenced)
-epochs: 3
+epochs: 30
 steps: null
 lr: 1.0e-4
 weight_decay: 1.0e-5
@@ -158,7 +158,7 @@ runner:
       _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
       _partial_: true
       warmup_factor: 0.2
-      warmup_epochs: 0.01
+      warmup_epochs: 0.05
       lr_min_factor: 0.01
       epochs: ${epochs}
       steps: ${steps}
