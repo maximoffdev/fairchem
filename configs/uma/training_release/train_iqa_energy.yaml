@@ -33,7 +33,7 @@ data:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
         mean: 0.0
         rmsd: ${normalizer_rmsd}
-      datasets: ${runner.train_eval_unit.model.backbone.dataset_list}
+      datasets: ["iqa_pkl"] #${runner.train_eval_unit.model.backbone.dataset_list}
       metrics: [] # optional
       train_on_free_atoms: false
       eval_on_free_atoms: false
@@ -60,13 +60,13 @@ data:
 
 # dataloader knobs (referenced)
 batch_size: 32
-num_workers: 0
-max_neighbors: 128
+num_workers: 8
+max_neighbors: 32
 
 # training knobs (referenced)
 epochs: 30
 steps: null
-lr: 1.0e-4
+lr: 5.0e-4 # 1.0e-5 when finetuning, sonst 5.0e-4
 weight_decay: 1.0e-5
 #evaluate_every_n_steps: 50
 #checkpoint_every_n_steps: 500
@@ -78,9 +78,18 @@ job:
   device_type: CUDA
   debug: true
   scheduler:
-    mode: LOCAL
-    ranks_per_node: 1
+    mode: SLURM
     num_nodes: 1
+    ranks_per_node: 1 # Number of GPUs to use on the node
+    slurm:
+      # --- IMPORTANT: Change these to match your cluster ---
+      partition: gpu_partition_name  # The name of your GPU partition
+      account: your_account_name     # Your SLURM account, if required
+      # ---
+      time: "12:00:00"           # Request 12 hours of wall time
+      gres: "gpu:1"              # Request 1 GPU. Must match ranks_per_node
+      cpus_per_task: 8           # Match num_workers for good performance
+      mem: "32G"                 # Request 32 GB of system RAM
   run_dir: ./runs/iqa_energy
   run_name: iqa_energy_smoketest
   logger:
@@ -131,22 +140,18 @@ runner:
     job_config: ${job}
     tasks: ${data.tasks_list}
 
+    # THIS IS THE CORRECTED MODEL CONFIGURATION
     model:
-      _target_: fairchem.core.models.base.HydraModel
-      backbone:
-        model: fairchem.core.models.uma.escn_md.eSCNMDBackbone
-        dataset_list: ["iqa_pkl"] # <-- REQUIRED by eSCNMDBackbone
-        lmax: 2
-        mmax: 2
-        sphere_channels: 64
-        num_layers: 3
-        cutoff: 6.0
-        max_neighbors: ${max_neighbors}
-        use_pbc: false
+      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      checkpoint_location: /home/lukas/uni/whk/models/uma-s-1p1.pt
+      # Define the new head(s) to be attached to the model
+      overrides:
+        #max_neighbors: ${max_neighbors}
+        freeze_backbone: true
       heads:
         e_iqa_a:
           module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-          reduce: sum
+          # No other parameters needed for your simple head
 
     optimizer_fn:
       _target_: torch.optim.AdamW
