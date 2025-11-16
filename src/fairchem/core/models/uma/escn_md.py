@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Dict
 
 import torch
 import torch.nn as nn
@@ -804,6 +804,37 @@ class Linear_Energy_Head(nn.Module, HeadInterface):
             raise ValueError(
                 f"reduce can only be sum or mean, user provided: {self.reduce}"
             )
+
+
+class IQA_Energy_Head(nn.Module, HeadInterface):
+    """
+    Minimal per-atom head: predict e_iqa_a (one scalar per atom)
+    from the first-channel node embedding.
+    """
+    def __init__(self, backbone: eSCNMDBackbone, reduce: str = "sum") -> None:
+        super().__init__()
+        C = backbone.sphere_channels
+        self.reduce = reduce
+        hidden = backbone.hidden_channels
+        self.mlp = nn.Sequential(
+            nn.Linear(C, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # emb["node_embedding"]: (N, C, ...)
+        x = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
+        e = self.mlp(x).squeeze(-1)                           # (N,)
+        if self.reduce == "sum":
+            return {"e_iqa_a": e}
+        elif self.reduce == "mean":
+            n_atoms = data["natoms"].unsqueeze(-1)            # (B, 1)
+            e = e / n_atoms[data["batch"]]                    # (N,)
+            return {"e_iqa_a": e}
+        else:
+            raise ValueError(f"reduce can only be sum or mean, user provided: {self.reduce}")
+
 
 
 class Linear_Force_Head(nn.Module, HeadInterface):
