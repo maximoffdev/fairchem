@@ -813,14 +813,19 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
     """
     def __init__(self, backbone: eSCNMDBackbone, reduce: str = "sum") -> None:
         super().__init__()
-        C = backbone.sphere_channels
         self.reduce = reduce
-        hidden = backbone.hidden_channels
-        self.mlp = nn.Sequential(
-            nn.Linear(C, hidden),
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        
+        # MLP allows the head to learn complex mappings from the frozen backbone
+        self.energy_block = nn.Sequential(
+            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
             nn.SiLU(),
-            nn.Linear(hidden, 1),
+            nn.Linear(self.hidden_channels, self.hidden_channels // 2, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels // 2, 1, bias=True),
         )
+
 
     def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         # emb["node_embedding"]: (N, C, ...)

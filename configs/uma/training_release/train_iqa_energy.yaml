@@ -23,17 +23,11 @@ data:
         loss_fn:
           _target_: fairchem.core.modules.loss.MSELoss
         reduction: mean
-      # loss_fn:
-      #   _target_: fairchem.core.modules.loss.DDPMTLoss
-      #   loss_fn:
-      #     _target_: fairchem.core.modules.loss.L2NormLoss
-      #   reduction: sum
-        #coefficient: ${direct_forces_coef}
       normalizer:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
         mean: 0.0
         rmsd: ${normalizer_rmsd}
-      datasets: ${runner.train_eval_unit.model.backbone.dataset_list}
+      datasets: ["omol"] #${runner.train_eval_unit.model.backbone.dataset_list}
       metrics: [] # optional
       train_on_free_atoms: false
       eval_on_free_atoms: false
@@ -44,15 +38,16 @@ data:
   # dataset kwargs used below
   train_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/testing2/train # <-- change me
+    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/train # <-- change me
+    name: omol
     enforce_consistent_keys: true
-    # If your PKL energy key is 'e_total', expose an alias 'energy' here:
     key_mapping:
       energy: e_total
       e_iqa_a: E_IQA(A)
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /home/lukas/uni/whk/testing2/test # <-- change me
+    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/new_test # <-- change me
+    name: omol
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
@@ -60,36 +55,34 @@ data:
 
 # dataloader knobs (referenced)
 batch_size: 32
-num_workers: 0
-max_neighbors: 128
+num_workers: 4
+#max_neighbors: 32
 
 # training knobs (referenced)
 epochs: 30
 steps: null
-lr: 1.0e-4
+lr: 5.0e-4 # 1.0e-5 when finetuning, sonst 5.0e-4
 weight_decay: 1.0e-5
-#evaluate_every_n_steps: 50
-#checkpoint_every_n_steps: 500
 
-# --------------------------------
-# Required top-level keys for FAIRChem CLI
-# --------------------------------
 job:
   device_type: CUDA
   debug: true
   scheduler:
-    mode: LOCAL
-    ranks_per_node: 1
-    num_nodes: 1
+    mode: SLURM
+    num_nodes: 2
+    ranks_per_node: 8 # Number of GPUs to use on the node
+    slurm:
+      partition: clara # The name of your GPU partition
+      cpus_per_task: 4 # Match num_workers for good performance
+      mem_gb: "0"
+      timeout_hr: "48"
   run_dir: ./runs/iqa_energy
-  run_name: iqa_energy_smoketest
+  run_name: iqa_energy_omol_finetune_with_backbone
   logger:
-    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
-    _partial_: true
-    entity: example
-    project: iqa_energy_debug
+    _target_: fairchem.core.common.logger.TensorboardLogger
+    cmd:
+      logs_dir: ${job.run_dir}
 
-# Instantiate datasets (Hydra will call these)
 train_dataset: ${data.train_dataset}
 val_dataset: ${data.val_dataset}
 
@@ -119,7 +112,7 @@ eval_dataloader:
   collate_fn:
     _target_: fairchem.core.datasets.data_list_collater
     _partial_: true
-# Wire everything through the runner
+
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
   max_epochs: ${epochs}
@@ -130,23 +123,15 @@ runner:
     _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
     job_config: ${job}
     tasks: ${data.tasks_list}
-
     model:
-      _target_: fairchem.core.models.base.HydraModel
-      backbone:
-        model: fairchem.core.models.uma.escn_md.eSCNMDBackbone
-        dataset_list: ["iqa_pkl"] # <-- REQUIRED by eSCNMDBackbone
-        lmax: 2
-        mmax: 2
-        sphere_channels: 64
-        num_layers: 3
-        cutoff: 6.0
-        max_neighbors: ${max_neighbors}
-        use_pbc: false
+      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/38529caa2c51a9a8a0d71f0b56b79ac33bc9eceb/checkpoints/uma-s-1p1.pt
+      overrides:
+        freeze_backbone: false
+        pass_through_head_outputs: false
       heads:
         e_iqa_a:
           module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-          reduce: sum
 
     optimizer_fn:
       _target_: torch.optim.AdamW
