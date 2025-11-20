@@ -2,11 +2,9 @@ from __future__ import annotations
 import os
 import random
 import pickle
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional
 
 import torch
-from torch.utils.data import Dataset as TorchDataset
-from torch_geometric.data import Data
 from fairchem.core.datasets.base_dataset import BaseDataset
 from fairchem.core.common.registry import registry
 from pathlib import Path
@@ -27,43 +25,6 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
     return x * 27.211386245988
 
-
-def write_minimal_metadata(src_dir: str, file_paths: list[str]):
-    import pickle
-    import torch
-    import numpy as np
-    from torch_geometric.data import Data
-    natoms_list = []
-    for fp in file_paths:
-        with open(fp, "rb") as f:
-            raw = pickle.load(f)
-        if isinstance(raw, Data)
-            d = raw
-        elif isinstance(raw, dict):
-            d = Data(**raw)
-        else:
-            d = Data(**dict(raw))
-        # prefer explicit natoms; else infer from pos
-        if "natoms" in d:
-            n = int(d["natoms"])
-        elif "pos" in d and isinstance(d["pos"], torch.Tensor):
-            n = int(d["pos"].shape[0])
-        else:
-            n = 0
-        natoms_list.append(n)
-    out = Path(src_dir) / "metadata.npz"
-    np.savez_compressed(out, natoms=np.array(natoms_list, dtype=np.int32))
-    return str(out)
-
-import os
-import pickle
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import numpy as np
-import torch
-
-# from fairchem.core.datasets import BaseDataset, registry
 from fairchem.core.datasets.atomic_data import AtomicData
 
 # ---- Canonical key mappings ----
