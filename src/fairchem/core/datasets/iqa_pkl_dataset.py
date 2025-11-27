@@ -117,7 +117,6 @@ class IQAPKLDataset(BaseDataset):
         self.key_mapping = key_mapping or {}
         self.allow_missing_labels = allow_missing_labels
         self.bohr2ang = bohr2ang
-
         self.name = name
         self.dataset_name = name
         self.dataset_names = [name]
@@ -234,7 +233,7 @@ class IQAPKLDataset(BaseDataset):
 
         ad.dataset_name = self.name
         if "e_iqa_a" in labels:
-            ad.e_iqa_a = labels["e_iqa_a"]  # (E,)
+            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"])  # (E,)
 
         return ad
 

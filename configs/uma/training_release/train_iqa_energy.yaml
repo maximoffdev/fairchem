@@ -27,7 +27,7 @@ data:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
         mean: 0.0
         rmsd: ${normalizer_rmsd}
-      datasets: ["omol"] #${runner.train_eval_unit.model.backbone.dataset_list}
+      datasets: ["omol"] # needed for the finetuning setup
       metrics: [] # optional
       train_on_free_atoms: false
       eval_on_free_atoms: false
@@ -55,13 +55,13 @@ data:
 
 # dataloader knobs (referenced)
 batch_size: 32
-num_workers: 4
-#max_neighbors: 32
+num_workers: 0
+#max_neighbors: 128
 
 # training knobs (referenced)
-epochs: 30
+epochs: 200
 steps: null
-lr: 5.0e-4 # 1.0e-5 when finetuning, sonst 5.0e-4
+lr: 5.0e-4 # 1.0e-5 when finetuning, else 5.0e-4
 weight_decay: 1.0e-5
 
 job:
@@ -69,19 +69,18 @@ job:
   debug: true
   scheduler:
     mode: SLURM
-    num_nodes: 2
+    num_nodes: 1
     ranks_per_node: 8 # Number of GPUs to use on the node
     slurm:
       partition: clara # The name of your GPU partition
       cpus_per_task: 4 # Match num_workers for good performance
       mem_gb: "0"
       timeout_hr: "48"
-  run_dir: ./runs/iqa_energy
-  run_name: iqa_energy_omol_finetune_with_backbone
-  logger:
-    _target_: fairchem.core.common.logger.TensorboardLogger
-    cmd:
-      logs_dir: ${job.run_dir}
+        #additional_parameters:
+        #export: "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
+  run_dir: /work/rh41uvuh-iqa_train/iqa
+  run_name: iqa_energy_backbone_frozen_long_ev
+  # logger: []
 
 train_dataset: ${data.train_dataset}
 val_dataset: ${data.val_dataset}
@@ -127,7 +126,7 @@ runner:
       _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
       checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/38529caa2c51a9a8a0d71f0b56b79ac33bc9eceb/checkpoints/uma-s-1p1.pt
       overrides:
-        freeze_backbone: false
+        freeze_backbone: true
         pass_through_head_outputs: false
       heads:
         e_iqa_a:
