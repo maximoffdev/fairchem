@@ -110,6 +110,7 @@ class IQAPKLDataset(BaseDataset):
         name: str = "iqa_pkl",
         allow_missing_labels: bool = False,
         bohr2ang: bool = True,
+        ht2ev: bool = True,
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -117,6 +118,7 @@ class IQAPKLDataset(BaseDataset):
         self.key_mapping = key_mapping or {}
         self.allow_missing_labels = allow_missing_labels
         self.bohr2ang = bohr2ang
+        self.ht2ev = ht2ev
         self.name = name
         self.dataset_name = name
         self.dataset_names = [name]
@@ -233,7 +235,7 @@ class IQAPKLDataset(BaseDataset):
 
         ad.dataset_name = self.name
         if "e_iqa_a" in labels:
-            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"])  # (E,)
+            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"]) / 1000 if self.ht2ev else labels["e_iqa_a"]  # (E,)
 
         return ad
 
