@@ -1,0 +1,153 @@
+# Minimal FAIRChem v2 training config for IQA PKL energy regression
+# Run: fairchem -c configs/train_iqa_energy_v2.yaml
+
+defaults:
+  - _self_
+
+normalizer_rmsd: 1.423
+# --------------------------------
+# Experiment variables (all referenced below)
+# --------------------------------
+data:
+  tasks_list:
+    - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+      name: e_iqa_a # MUST match heads.<this key>
+      level: atom
+      property: e_iqa_a # logical property name
+      out_spec:
+        e_iqa_a:
+          prediction_key: e_iqa_a
+          label_key: e_iqa_a
+      loss_fn:
+        _target_: fairchem.core.modules.loss.DDPMTLoss
+        loss_fn:
+          _target_: fairchem.core.modules.loss.MSELoss
+        reduction: mean
+      normalizer:
+        _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+        mean: 0.0
+        rmsd: ${normalizer_rmsd}
+      datasets: ["omol"] # needed for the finetuning setup
+      metrics: [] # optional
+      train_on_free_atoms: false
+      eval_on_free_atoms: false
+      inference_only: false
+  pass_through_head_outputs: false
+  regress_stress: false
+
+  # dataset kwargs used below
+  train_dataset:
+    _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/train # <-- change me
+    name: omol
+    enforce_consistent_keys: true
+    key_mapping:
+      energy: e_total
+      e_iqa_a: E_IQA(A)
+  val_dataset:
+    _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/new_test # <-- change me
+    name: omol
+    enforce_consistent_keys: true
+    key_mapping:
+      energy: e_total
+      e_iqa_a: E_IQA(A)
+
+# dataloader knobs (referenced)
+batch_size: 32
+num_workers: 0
+#max_neighbors: 128
+
+# training knobs (referenced)
+epochs: 200
+steps: null
+lr: 5.0e-4 # 1.0e-5 when finetuning, else 5.0e-4
+weight_decay: 1.0e-5
+
+job:
+  device_type: CUDA
+  debug: true
+  scheduler:
+    mode: SLURM
+    num_nodes: 1
+    ranks_per_node: 8 # Number of GPUs to use on the node
+    slurm:
+      partition: clara # The name of your GPU partition
+      cpus_per_task: 4 # Match num_workers for good performance
+      mem_gb: "0"
+      timeout_hr: "48"
+        #additional_parameters:
+        #export: "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
+  run_dir: /work/rh41uvuh-iqa_train/iqa
+  run_name: iqa_energy_backbone_frozen_long_ev
+  # logger: []
+
+train_dataset: ${data.train_dataset}
+val_dataset: ${data.val_dataset}
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${train_dataset}
+  batch_sampler_fn:
+    _target_: fairchem.core.common.data_parallel.BalancedBatchSampler
+    _partial_: true
+    batch_size: ${batch_size}
+    shuffle: true
+    seed: 0
+  num_workers: ${num_workers}
+  collate_fn:
+    _target_: fairchem.core.datasets.data_list_collater
+    _partial_: true
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${val_dataset}
+  batch_sampler_fn:
+    _target_: fairchem.core.common.data_parallel.BalancedBatchSampler
+    _partial_: true
+    batch_size: ${batch_size}
+    shuffle: true
+    seed: 0
+  num_workers: ${num_workers}
+  collate_fn:
+    _target_: fairchem.core.datasets.data_list_collater
+    _partial_: true
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  max_epochs: ${epochs}
+  max_steps: ${steps}
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${data.tasks_list}
+    model:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/38529caa2c51a9a8a0d71f0b56b79ac33bc9eceb/checkpoints/uma-s-1p1.pt
+      overrides:
+        freeze_backbone: true
+        pass_through_head_outputs: false
+      heads:
+        e_iqa_a:
+          module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: ${lr}
+      weight_decay: ${weight_decay}
+
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.05
+      lr_min_factor: 0.01
+      epochs: ${epochs}
+      steps: ${steps}
+  callbacks:
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 500
+      max_saved_checkpoints: 3
+    - _target_: torchtnt.framework.callbacks.TQDMProgressBar

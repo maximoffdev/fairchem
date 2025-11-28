@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Dict
 
 import torch
 import torch.nn as nn
@@ -804,6 +804,42 @@ class Linear_Energy_Head(nn.Module, HeadInterface):
             raise ValueError(
                 f"reduce can only be sum or mean, user provided: {self.reduce}"
             )
+
+
+class IQA_Energy_Head(nn.Module, HeadInterface):
+    """
+    Minimal per-atom head: predict e_iqa_a (one scalar per atom)
+    from the first-channel node embedding.
+    """
+    def __init__(self, backbone: eSCNMDBackbone, reduce: str = "sum") -> None:
+        super().__init__()
+        self.reduce = reduce
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        
+        # MLP allows the head to learn complex mappings from the frozen backbone
+        self.mlp = nn.Sequential(
+            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels, self.hidden_channels // 2, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels // 2, 1, bias=True),
+        )
+
+
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # emb["node_embedding"]: (N, C, ...)
+        x = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
+        e = self.mlp(x).squeeze(-1)                           # (N,)
+        if self.reduce == "sum":
+            return {"e_iqa_a": e}
+        elif self.reduce == "mean":
+            n_atoms = data["natoms"].unsqueeze(-1)            # (B, 1)
+            e = e / n_atoms[data["batch"]]                    # (N,)
+            return {"e_iqa_a": e}
+        else:
+            raise ValueError(f"reduce can only be sum or mean, user provided: {self.reduce}")
+
 
 
 class Linear_Force_Head(nn.Module, HeadInterface):

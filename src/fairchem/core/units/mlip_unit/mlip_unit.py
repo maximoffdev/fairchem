@@ -205,6 +205,14 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
             output_masks[f"{dset}.{task.name}"] = (
                 dset_expanded & output_masks[task.name]
             )
+        elif task.level == "edge":
+            # expand per-graph mask (B,) → (E,)
+            dset_mask = torch.repeat_interleave(dset_mask, batch.nedges.long())
+            output_masks[task.name] = output_masks[task.name].all(dim=-1) # TODO figure out if this is needed everytime
+            # if label is multi-channel (E, C), broadcast mask across channels
+            if output_masks[task.name].dim() == 2:
+                dset_mask = dset_mask.unsqueeze(1).expand_as(output_masks[task.name])
+            output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
         else:
             output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
 
@@ -268,6 +276,8 @@ def compute_loss(
         pred_for_task = predictions[task.name][task.property]
         if task.level == "atom":
             pred_for_task = pred_for_task.view(num_atoms_in_batch, -1)
+        elif task.level == "edge":
+            pass
         else:
             pred_for_task = pred_for_task.view(batch_size, -1)
 
@@ -320,6 +330,9 @@ def compute_metrics(
         output_size = natoms_masked.numel()
     elif "stress" in task.name:
         natoms_masked = batch.natoms[output_mask.all(dim=1)]
+        output_size = output_mask.sum()
+    elif task.level == "edge":
+        natoms_masked = torch.ones_like(output_mask, dtype=torch.long, device=output_mask.device)
         output_size = output_mask.sum()
     else:
         natoms_masked = batch.natoms[output_mask]
