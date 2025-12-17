@@ -38,7 +38,7 @@ data:
   # dataset kwargs used below
   train_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/train # <-- change me
+    src: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/train # <-- change me
     name: omol
     enforce_consistent_keys: true
     key_mapping:
@@ -46,7 +46,7 @@ data:
       e_iqa_a: E_IQA(A)
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-    src: /work/rh41uvuh-iqa_train/HCNOSPClF_combined_datasets_filtered0.001/new_test # <-- change me
+    src: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/new_test # <-- change me
     name: omol
     enforce_consistent_keys: true
     key_mapping:
@@ -78,8 +78,8 @@ job:
       timeout_hr: "48"
         #additional_parameters:
         #export: "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
-  run_dir: /work/rh41uvuh-iqa_train/iqa
-  run_name: iqa_energy_backbone_frozen_long_ev
+  run_dir: /work/rh41uvuh-iqa_train_2/iqa
+  run_name: iqa_energy_backbone_frozen_long_ev_corrected_2
   # logger: []
 
 train_dataset: ${data.train_dataset}
@@ -142,7 +142,7 @@ runner:
       _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
       _partial_: true
       warmup_factor: 0.2
-      warmup_epochs: 0.05
+      warmup_epochs: 0.01
       lr_min_factor: 0.01
       epochs: ${epochs}
       steps: ${steps}

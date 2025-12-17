@@ -37,7 +37,6 @@ PAIR_KEYS_PKL_TO_CANON = {
     # "VeeC(A,B)/2":        "pair_VeeC_2",
     # "VeeX(A,B)/2":        "pair_VeeX_2",
     # "E_IQA(A)":           "e_iqa_a",
-
 }
 
 SYSTEM_KEYS_PKL_TO_CANON = {
@@ -212,6 +211,9 @@ class IQAPKLDataset(BaseDataset):
         tags   = torch.zeros(N, dtype=torch.long)   # per-node tags
 
         energy = labels.get("energy", None)
+
+        energy = Ht_to_eV(energy) if self.ht2ev else energy  # (E,)
+        
         ad = AtomicData(
             pos=pos,
             atomic_numbers=Z,
@@ -235,7 +237,7 @@ class IQAPKLDataset(BaseDataset):
 
         ad.dataset_name = self.name
         if "e_iqa_a" in labels:
-            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"]) / 1000 if self.ht2ev else labels["e_iqa_a"]  # (E,)
+            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"]) if self.ht2ev else labels["e_iqa_a"]  # (E,)
 
         return ad
 
