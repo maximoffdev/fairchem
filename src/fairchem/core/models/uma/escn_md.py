@@ -819,6 +819,8 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         
         # MLP allows the head to learn complex mappings from the frozen backbone
         self.mlp = nn.Sequential(
+            nn.SO3_Linear(self.sphere_channels, self.sphere_channels, bias=True),
+            nn.SiLU(),
             nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
             nn.SiLU(),
             nn.Linear(self.hidden_channels, self.hidden_channels // 2, bias=True),
