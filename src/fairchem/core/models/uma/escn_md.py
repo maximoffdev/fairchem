@@ -806,43 +806,123 @@ class Linear_Energy_Head(nn.Module, HeadInterface):
             )
 
 
+# class IQA_Energy_Head(nn.Module, HeadInterface):
+#     """
+#     Minimal per-atom head: predict e_iqa_a (one scalar per atom)
+#     from the first-channel node embedding.
+#     """
+#     def __init__(self, backbone: eSCNMDBackbone, reduce: str = "sum") -> None:
+#         super().__init__()
+#         self.reduce = reduce
+#         self.sphere_channels = backbone.sphere_channels
+#         self.hidden_channels = backbone.hidden_channels
+        
+#         # MLP allows the head to learn complex mappings from the frozen backbone
+#         self.mlp = nn.Sequential(
+#             nn.SO3_Linear(self.sphere_channels, self.sphere_channels, bias=True),
+#             nn.SiLU(),
+#             nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels, self.hidden_channels // 2, bias=True),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels // 2, 1, bias=True),
+#         )
+
+
+#     def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+#         # emb["node_embedding"]: (N, C, ...)
+#         x = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
+#         e = self.mlp(x).squeeze(-1)                           # (N,)
+#         if self.reduce == "sum":
+#             return {"e_iqa_a": e}
+#         elif self.reduce == "mean":
+#             n_atoms = data["natoms"].unsqueeze(-1)            # (B, 1)
+#             e = e / n_atoms[data["batch"]]                    # (N,)
+#             return {"e_iqa_a": e}
+#         else:
+#             raise ValueError(f"reduce can only be sum or mean, user provided: {self.reduce}")
+
 class IQA_Energy_Head(nn.Module, HeadInterface):
     """
-    Minimal per-atom head: predict e_iqa_a (one scalar per atom)
-    from the first-channel node embedding.
+    Advanced per-atom head: predict e_iqa_a using L=0 features AND norms of L>0 features.
+    Includes Dropout, LayerNorm, and Residual connections.
     """
-    def __init__(self, backbone: eSCNMDBackbone, reduce: str = "sum") -> None:
+    def __init__(self, backbone: eSCNMDBackbone, dropout: float = 0.0) -> None:
         super().__init__()
-        self.reduce = reduce
         self.sphere_channels = backbone.sphere_channels
         self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
         
-        # MLP allows the head to learn complex mappings from the frozen backbone
-        self.mlp = nn.Sequential(
-            nn.SO3_Linear(self.sphere_channels, self.sphere_channels, bias=True),
+        # We will concatenate L=0 features with the norms of L=1..Lmax features.
+        # Input dim = C * (Lmax + 1)
+        input_dim = self.sphere_channels * (self.lmax + 1)
+        
+        # Projection from combined features to hidden dim
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_channels),
             nn.SiLU(),
-            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.hidden_channels // 2, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels // 2, 1, bias=True),
+            nn.Dropout(dropout)
         )
 
+        # Residual Block 1
+        self.res1 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+        
+        # Residual Block 2
+        self.res2 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+
+        # Final output
+        self.final = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, 1)
+        )
 
     def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        # emb["node_embedding"]: (N, C, ...)
-        x = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)  # (N, C)
-        e = self.mlp(x).squeeze(-1)                           # (N,)
-        if self.reduce == "sum":
-            return {"e_iqa_a": e}
-        elif self.reduce == "mean":
-            n_atoms = data["natoms"].unsqueeze(-1)            # (B, 1)
-            e = e / n_atoms[data["batch"]]                    # (N,)
-            return {"e_iqa_a": e}
-        else:
-            raise ValueError(f"reduce can only be sum or mean, user provided: {self.reduce}")
+        # emb["node_embedding"]: (N, (Lmax+1)^2, C)
+        node_emb = emb["node_embedding"]
+        
+        # 1. Extract L=0 (Scalar) -> (N, C)
+        # narrow(dim, start, length)
+        scalars = node_emb.narrow(1, 0, 1).squeeze(1)
+        
+        features = [scalars]
+        
+        # 2. Extract Norms of L>0 -> (N, C)
+        # L=1 is at indices 1..3 (length 3)
+        # L=2 is at indices 4..8 (length 5)
+        # ...
+        current_idx = 1
+        for l in range(1, self.lmax + 1):
+            length = 2 * l + 1
+            # Extract vector/tensor part
+            vec = node_emb.narrow(1, current_idx, length) # (N, 2l+1, C)
+            # Compute norm over the component dimension (dim 1)
+            # norm shape: (N, C)
+            vec_norm = vec.norm(dim=1) 
+            features.append(vec_norm)
+            current_idx += length
+            
+        # 3. Concatenate all invariants
+        x = torch.cat(features, dim=-1) # (N, C * (Lmax+1))
+        
+        # 4. MLP with Residuals
+        x = self.proj(x)
+        x = x + self.res1(x)
+        x = x + self.res2(x)
+        e = self.final(x).squeeze(-1)
 
-
+        return {"e_iqa_a": e}
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:

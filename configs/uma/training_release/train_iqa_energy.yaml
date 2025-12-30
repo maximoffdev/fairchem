@@ -146,6 +146,7 @@ runner:
       heads:
         e_iqa_a:
           module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+          dropout: 0.0
 
     optimizer_fn:
       _target_: torch.optim.AdamW
