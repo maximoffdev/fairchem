@@ -34,6 +34,7 @@ cpu_graph: True
 # --- Backbone Overrides (Required) ---
 max_neighbors: 30 # Used in overrides
 regress_stress: False # Used in overrides often
+direct_forces: False
 
 iqa_t_coef: 1.0
 iqa_vne_coef: 1.0
