@@ -1,0 +1,38 @@
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_kinetic
+  level: atom
+  property: e_iqa_t
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.PerAtomMAELoss
+    coefficient: ${iqa_t_coef}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne
+  level: atom
+  property: e_iqa_vne
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.PerAtomMAELoss
+    coefficient: ${iqa_vne_coef}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee
+  level: atom
+  property: e_iqa_vee
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.PerAtomMAELoss
+    coefficient: ${iqa_vee_coef}
+  out_spec:
+    dim: [1]
+    dtype: float32

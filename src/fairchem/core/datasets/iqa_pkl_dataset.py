@@ -236,8 +236,19 @@ class IQAPKLDataset(BaseDataset):
         )
 
         ad.dataset_name = self.name
-        if "e_iqa_a" in labels:
-            ad.e_iqa_a = Ht_to_eV(labels["e_iqa_a"]) if self.ht2ev else labels["e_iqa_a"]  # (E,)
+
+        # Generic handling for IQA components to ensure Unit Conversion (Ht -> eV) applies
+        # This allows you to add any new keys in the YAML key_mapping without changing code
+        for out_key, val in labels.items():
+            if out_key == "energy":
+                continue # Already handled
+
+            # Apply unit conversion if requested
+            converted_val = Ht_to_eV(val) if self.ht2ev else val
+
+            # Use setattr to attach it to the AtomicData object
+            # e.g. ad.e_iqa_t = ...
+            setattr(ad, out_key, converted_val)
 
         return ad
 

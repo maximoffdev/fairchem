@@ -1,0 +1,19 @@
+iqa_train:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/train
+  ht2ev: true
+  key_mapping:
+    energy: e_total
+    e_iqa_t: T(A)
+    e_iqa_vne: Vne(A,A)
+    e_iqa_vee: Vee(A,A)
+
+iqa_val:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/val
+  ht2ev: true
+  key_mapping:
+    energy: e_total
+    e_iqa_t: T(A)
+    e_iqa_vne: Vne(A,A)
+    e_iqa_vee: Vee(A,A)

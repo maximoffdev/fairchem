@@ -1,0 +1,11 @@
+data_root_dir: /home/lukas/uni/whk/fairchem/data
+run_dir: ${oc.env:PWD}/runs
+account: null
+qos: null
+mode: LOCAL
+device: CUDA
+ranks_per_node: 8
+dataloader_workers: 4
+debug: False
+mem_gb: 0
+cpus_per_task: 4
