@@ -29,7 +29,7 @@ starting_checkpoint: "/checkpoint/ocp/shared/uma/202505-0117-1812-5a58/checkpoin
 steps: 50000 
 max_atoms: 350
 bf16: True
-cpu_graph: True
+# cpu_graph: True
 
 # --- Backbone Overrides (Required) ---
 max_neighbors: 30 # Used in overrides

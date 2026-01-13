@@ -29,7 +29,7 @@ job:
 steps: 200000
 max_atoms: 350
 bf16: True
-cpu_graph: True
+# cpu_graph: True
 
 # --- Backbone/Model Variables (Required by K10L4) ---
 moe_layer_type: pytorch
