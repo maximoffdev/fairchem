@@ -10,7 +10,7 @@ iqa_train:
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
-  src: ${cluster.data_root_dir}/val
+  src: ${cluster.data_root_dir}/new_test
   ht2ev: true
   key_mapping:
     energy: e_total
