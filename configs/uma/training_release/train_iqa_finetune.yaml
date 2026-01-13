@@ -31,6 +31,10 @@ max_atoms: 350
 bf16: True
 cpu_graph: True
 
+# --- Backbone Overrides (Required) ---
+max_neighbors: 30 # Used in overrides
+regress_stress: False # Used in overrides often
+
 iqa_t_coef: 1.0
 iqa_vne_coef: 1.0
 iqa_vee_coef: 1.0
