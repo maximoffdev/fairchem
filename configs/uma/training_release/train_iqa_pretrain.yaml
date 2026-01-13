@@ -16,6 +16,7 @@ job:
       qos: ${cluster.qos}
       mem_gb: ${cluster.mem_gb}
       cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
   run_name: iqa_pretrain_3term
