@@ -12,8 +12,7 @@ job:
     ranks_per_node: ${cluster.ranks_per_node}
     num_nodes: 1
     slurm:
-      account: ${cluster.account}
-      qos: ${cluster.qos}
+      partition: ${cluster.partition}
       mem_gb: ${cluster.mem_gb}
       cpus_per_task: ${cluster.cpus_per_task}
       timeout_hr: "${cluster.timeout_hr}"
