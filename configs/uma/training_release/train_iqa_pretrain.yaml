@@ -26,7 +26,7 @@ job:
     #    project: uma-iqa
 
 # --- Runtime Hyperparameters ---
-steps: 200000
+steps: 1680000
 max_atoms: 350
 bf16: True
 # cpu_graph: True
