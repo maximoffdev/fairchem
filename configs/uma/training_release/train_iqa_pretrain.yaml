@@ -43,14 +43,15 @@ direct_forces: False
 iqa_t_coef: 1.0
 iqa_vne_coef: 1.0
 iqa_vee_coef: 1.0
+normalizer_rmsd: 1.423
 
 # --- Dataset Setup ---
 dataset_list: ["iqa"]
 exclude_keys: ["source", "sid"]
 
 train_dataset: ${dataset.iqa_train}
-
 val_dataset: ${dataset.iqa_val}
+
 train_dataloader:
   _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
   dataset: ${train_dataset}
