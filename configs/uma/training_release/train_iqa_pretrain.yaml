@@ -1,5 +1,5 @@
 defaults:
-  - cluster: user_cluster
+  - cluster: leipzig_cluster
   - dataset: iqa_components
   - tasks: iqa_decompose
   - backbone: K10L4
@@ -48,25 +48,9 @@ iqa_vee_coef: 1.0
 dataset_list: ["iqa"]
 exclude_keys: ["source", "sid"]
 
-train_dataset:
-  _target_: fairchem.core.datasets.mt_concat_dataset.create_concat_dataset
-  dataset_configs:
-    iqa: ${dataset.iqa_train}
-  combined_dataset_config:
-    sampling:
-      type: explicit
-      ratios:
-        iqa.train: 1.0
+train_dataset: ${dataset.iqa_train}
 
-val_dataset:
-  _target_: fairchem.core.datasets.mt_concat_dataset.create_concat_dataset
-  dataset_configs:
-    iqa: ${dataset.iqa_val}
-  combined_dataset_config:
-    sampling:
-      type: temperature
-      temperature: 1.0
-
+val_dataset: ${dataset.iqa_val}
 train_dataloader:
   _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
   dataset: ${train_dataset}
