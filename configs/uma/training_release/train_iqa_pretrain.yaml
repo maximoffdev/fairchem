@@ -49,12 +49,10 @@ normalizer_rmsd: 1.423
 dataset_list: ["iqa"]
 exclude_keys: ["source", "sid"]
 
-train_dataset: ${dataset.iqa_train}
-val_dataset: ${dataset.iqa_val}
 
 train_dataloader:
   _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
-  dataset: ${train_dataset}
+  dataset: ${dataset.iqa_train}
   batch_sampler_fn:
     _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
     _partial_: True
@@ -69,7 +67,7 @@ train_dataloader:
 
 eval_dataloader:
   _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
-  dataset: ${val_dataset}
+  dataset: ${dataset.iqa_val}
   batch_sampler_fn:
     _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
     _partial_: True
