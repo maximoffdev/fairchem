@@ -18,11 +18,11 @@ job:
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
   run_name: iqa_finetune_3term
-  logger:
-    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
-    _partial_: true
-    entity: fairchem
-    project: uma-iqa
+    #  logger:
+    #    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    #    _partial_: true
+    #    entity: fairchem
+    #    project: uma-iqa
 
 # --- Finetune Specifics ---
 starting_checkpoint: "/checkpoint/ocp/shared/uma/202505-0117-1812-5a58/checkpoints/final/inference_ckpt.pt" 

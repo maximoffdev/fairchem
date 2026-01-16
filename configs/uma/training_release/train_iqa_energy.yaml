@@ -27,7 +27,7 @@ data:
         _target_: fairchem.core.modules.normalization.normalizer.Normalizer
         mean: 0.0
         rmsd: ${normalizer_rmsd}
-      datasets: ["omol"] # needed for the finetuning setup
+      datasets: ["iqa_pkl"] # needed for the finetuning setup
       metrics: [] # optional
       train_on_free_atoms: false
       eval_on_free_atoms: false
@@ -39,7 +39,7 @@ data:
   train_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
     src: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/train # <-- change me
-    name: omol
+    name: iqa_pkl
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
@@ -47,22 +47,22 @@ data:
   val_dataset:
     _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
     src: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/new_test # <-- change me
-    name: omol
+    name: iqa_pkl
     enforce_consistent_keys: true
     key_mapping:
       energy: e_total
       e_iqa_a: E_IQA(A)
 
 # dataloader knobs (referenced)
-batch_size: 32
+batch_size: 64
 num_workers: 0
 #max_neighbors: 128
 
 # training knobs (referenced)
-epochs: 200
+epochs: 1000
 steps: null
-lr: 1.0e-5 # 1.0e-5 when finetuning, else 5.0e-4
-weight_decay: 1.0e-5
+lr: 8.0e-4 # 1.0e-5 when finetuning, else 5.0e-4
+weight_decay: 1.0e-3
 
 job:
   device_type: CUDA
@@ -79,7 +79,7 @@ job:
         #additional_parameters:
         #export: "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
   run_dir: /work/rh41uvuh-iqa_train_2/iqa
-  run_name: iqa_energy_omol_not_frozen_long_ev_corrected_lr_corrected_so3
+  run_name: iqa_energy_bare_long_ev_corrected_lr_corrected_new_drop_false
   # logger: []
 
 train_dataset: ${data.train_dataset}
@@ -123,30 +123,34 @@ runner:
     job_config: ${job}
     tasks: ${data.tasks_list}
     model:
-      #_target_: fairchem.core.models.base.HydraModel
-      #backbone:
-      #  model: fairchem.core.models.uma.escn_md.eSCNMDBackbone
-      #  dataset_list:
-      #  - iqa_pkl
-      #  lmax: 2
-      #  mmax: 2
-      #  sphere_channels: 64
-      #  num_layers: 3
-      #  cutoff: 6.0
-      #  max_neighbors: 128
-      #  use_pbc: false
-      #heads:
-      #  e_iqa_a:
-      #    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
-      checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/38529caa2c51a9a8a0d71f0b56b79ac33bc9eceb/checkpoints/uma-s-1p1.pt
-      overrides:
-        freeze_backbone: false
-        pass_through_head_outputs: false
+      _target_: fairchem.core.models.base.HydraModel
+      backbone:
+        model: fairchem.core.models.uma.escn_md.eSCNMDBackbone
+        dataset_list:
+        - iqa_pkl
+        lmax: 4
+        mmax: 2
+        sphere_channels: 128
+        num_layers: 10
+        cutoff: 6.0
+        max_neighbors: 30
+        use_pbc: false
       heads:
         e_iqa_a:
           module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-          dropout: 0.0
+          dropout: 0.1
+      #heads:
+      #  e_iqa_a:
+      #    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+      #_target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      #checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/38529caa2c51a9a8a0d71f0b56b79ac33bc9eceb/checkpoints/uma-s-1p1.pt
+      #overrides:
+      #  freeze_backbone: false
+      #  pass_through_head_outputs: false
+      #heads:
+      #  e_iqa_a:
+      #    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+      #    dropout: 0.1
 
     optimizer_fn:
       _target_: torch.optim.AdamW
