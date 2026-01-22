@@ -11,4 +11,4 @@ debug: False
 mem_gb: 0
 cpus_per_task: 4
 timeout_hr: "48"
-partition: clara
+partition: paula
