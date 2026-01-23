@@ -16,6 +16,8 @@ job:
       mem_gb: ${cluster.mem_gb}
       cpus_per_task: ${cluster.cpus_per_task}
       timeout_hr: "${cluster.timeout_hr}"
+      additional_parameters:
+        export: "ALL,NCCL_SOCKET_FAMILY=AF_INET,GLOO_SOCKET_FAMILY=AF_INET"
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
   run_name: iqa_pretrain_3term
