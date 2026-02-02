@@ -13,3 +13,4 @@ mem_gb: 0
 cpus_per_task: 6
 timeout_hr: "168"
 partition: alpha
+max_atoms: 360

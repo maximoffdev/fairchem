@@ -12,3 +12,4 @@ mem_gb: 0
 cpus_per_task: 8
 timeout_hr: "48"
 partition: paula
+max_atoms: 360

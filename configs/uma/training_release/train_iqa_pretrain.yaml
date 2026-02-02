@@ -29,7 +29,7 @@ job:
 
 # --- Runtime Hyperparameters ---
 steps: 1680000
-max_atoms: 350
+max_atoms: 20
 bf16: True
 # cpu_graph: True
 
@@ -42,13 +42,13 @@ cutoff_radius: 6.0
 regress_stress: False
 direct_forces: False
 
-iqa_t_coef: 1.0
+iqa_kinetic_coef: 1.0
 iqa_vne_coef: 1.0
 iqa_vee_coef: 1.0
 normalizer_rmsd: 1.423
 
 # --- Dataset Setup ---
-dataset_list: ["iqa"]
+dataset_list: ["iqa_pkl"]
 exclude_keys: ["source", "sid"]
 
 
@@ -84,11 +84,11 @@ eval_dataloader:
 
 heads:
   iqa_kinetic:
-    module: fairchem.core.models.uma.escn_md.MLP_Energy_Head
+    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
   iqa_vne:
-    module: fairchem.core.models.uma.escn_md.MLP_Energy_Head
+    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
   iqa_vee:
-    module: fairchem.core.models.uma.escn_md.MLP_Energy_Head
+    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner

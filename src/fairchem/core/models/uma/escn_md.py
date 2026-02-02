@@ -922,7 +922,7 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         x = x + self.res2(x)
         e = self.final(x).squeeze(-1)
 
-        return {"e_iqa_a": e}
+        return {"pred": e}
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:

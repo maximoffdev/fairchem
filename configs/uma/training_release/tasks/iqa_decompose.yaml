@@ -1,12 +1,13 @@
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: iqa_kinetic
   level: atom
-  property: e_iqa_t
+  property: pred
+  datasets: ["iqa_pkl"] # needed for the finetuning setup
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
-      _target_: fairchem.core.modules.loss.PerAtomMAELoss
-    coefficient: ${iqa_t_coef}
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_kinetic_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
@@ -14,15 +15,19 @@
   out_spec:
     dim: [1]
     dtype: float32
+    iqa_kinetic:
+      prediction_key: pred
+      label_key: iqa_kinetic
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: iqa_vne
   level: atom
-  property: e_iqa_vne
+  property: pred
+  datasets: ["iqa_pkl"] # needed for the finetuning setup
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
-      _target_: fairchem.core.modules.loss.PerAtomMAELoss
+      _target_: fairchem.core.modules.loss.MAELoss
     coefficient: ${iqa_vne_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
@@ -31,15 +36,19 @@
   out_spec:
     dim: [1]
     dtype: float32
+    iqa_vne:
+      prediction_key: pred
+      label_key: iqa_vne
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: iqa_vee
   level: atom
-  property: e_iqa_vee
+  property: pred
+  datasets: ["iqa_pkl"] # needed for the finetuning setup
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
-      _target_: fairchem.core.modules.loss.PerAtomMAELoss
+      _target_: fairchem.core.modules.loss.MAELoss
     coefficient: ${iqa_vee_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
@@ -48,3 +57,6 @@
   out_spec:
     dim: [1]
     dtype: float32
+    iqa_vee:
+      prediction_key: pred
+      label_key: iqa_vee
