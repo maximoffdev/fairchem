@@ -29,7 +29,6 @@ job:
 
 # --- Runtime Hyperparameters ---
 steps: 1680000
-max_atoms: 20
 bf16: True
 # cpu_graph: True
 
