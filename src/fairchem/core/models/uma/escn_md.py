@@ -90,6 +90,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         use_cuda_graph_wigner: bool = False,
         radius_pbc_version: int = 1,
         always_use_pbc: bool = True,
+        output_edge_features: bool = False,
     ) -> None:
         super().__init__()
         self.max_num_elements = max_num_elements
@@ -98,6 +99,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         self.sphere_channels = sphere_channels
         self.grid_resolution = grid_resolution
         self.num_sphere_samples = num_sphere_samples
+        self.output_edge_features = output_edge_features
         # set this True if we want to ALWAYS use pbc for internal graph gen
         # despite what's in the input data this only affects when otf_graph is True
         # in this mode, the user must be responsible for providing a large vaccum box
@@ -545,6 +547,12 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             "orig_cell": orig_cell,
             "batch": data_dict["batch"],
         }
+        
+        # Optionally include edge features for edge-level prediction heads
+        if self.output_edge_features:
+            out["edge_embedding"] = x_edge
+            out["edge_index"] = graph_dict["edge_index"]
+            
         return out
 
     def _init_gp_partitions(self, graph_dict, atomic_numbers_full):
@@ -923,6 +931,70 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         e = self.final(x).squeeze(-1)
 
         return {"pred": e}
+
+
+class IQA_Edge_Head(nn.Module, HeadInterface):
+    """
+    Edge-level head: predict pairwise IQA interactions using edge features.
+    Operates on edge embeddings to predict per-edge scalar values like E_IQA_Inter(A,B)/2.
+    """
+    def __init__(self, backbone: eSCNMDBackbone, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.edge_channels = backbone.edge_channels
+        self.hidden_channels = backbone.hidden_channels
+        
+        # Edge features come from backbone: [distance_embedding + source_emb + target_emb]
+        # This is already computed as x_edge in the backbone forward pass
+        # x_edge has shape (num_edges, edge_channels_list[0])
+        edge_input_dim = backbone.edge_channels_list[0]  # distance_basis + 2*edge_channels
+        
+        # Projection from edge features to hidden dim
+        self.proj = nn.Sequential(
+            nn.Linear(edge_input_dim, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Residual Block 1
+        self.res1 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+        
+        # Residual Block 2
+        self.res2 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+        
+        # Final output
+        self.final = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, 1)
+        )
+    
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # emb["edge_embedding"]: (num_edges, edge_input_dim)
+        if "edge_embedding" not in emb:
+            raise ValueError("IQA_Edge_Head requires 'edge_embedding' in emb dict. "
+                           "Set backbone output_edge_features=True")
+        
+        edge_features = emb["edge_embedding"]
+        
+        # MLP with Residuals
+        x = self.proj(edge_features)
+        x = x + self.res1(x)
+        x = x + self.res2(x)
+        e = self.final(x).squeeze(-1)  # (num_edges,)
+        
+        return {"pred": e}
+
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:

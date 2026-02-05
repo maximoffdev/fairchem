@@ -208,10 +208,12 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
         elif task.level == "edge":
             # expand per-graph mask (B,) → (E,)
             dset_mask = torch.repeat_interleave(dset_mask, batch.nedges.long())
-            output_masks[task.name] = output_masks[task.name].all(dim=-1) # TODO figure out if this is needed everytime
-            # if label is multi-channel (E, C), broadcast mask across channels
-            if output_masks[task.name].dim() == 2:
-                dset_mask = dset_mask.unsqueeze(1).expand_as(output_masks[task.name])
+            # Ensure mask is at least 1D after checking finite values
+            if output_masks[task.name].dim() > 1:
+                output_masks[task.name] = output_masks[task.name].all(dim=-1)
+            # Expand mask to match target shape if needed
+            dset_mask = dset_mask.view(-1, 1) if output_masks[task.name].dim() == 1 else dset_mask
+            output_masks[task.name] = output_masks[task.name].view(-1, 1) if output_masks[task.name].dim() == 1 else output_masks[task.name]
             output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
         else:
             output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
@@ -277,7 +279,9 @@ def compute_loss(
         if task.level == "atom":
             pred_for_task = pred_for_task.view(num_atoms_in_batch, -1)
         elif task.level == "edge":
-            pass
+            # Edge-level predictions: shape should be [num_edges, feature_dim]
+            num_edges_in_batch = batch.nedges.sum()
+            pred_for_task = pred_for_task.view(num_edges_in_batch, -1)
         else:
             pred_for_task = pred_for_task.view(batch_size, -1)
 

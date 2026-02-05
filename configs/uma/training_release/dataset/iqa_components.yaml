@@ -10,6 +10,12 @@ iqa_train:
     iqa_vne: Vne(A,A)
     iqa_vee: Vee(A,A)
     iqa_inter: E_IQA_Inter(A)
+    # Edge-level pairwise IQA components
+    iqa_inter_edge: E_IQA_Inter(A,B)/2
+    iqa_vee_edge: Vee(A,B)/2
+    iqa_vne_edge: Vne(A,B)/2
+    iqa_ven_edge: Ven(A,B)/2
+    iqa_vnn_edge: Vnn(A,B)/2
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -23,3 +29,9 @@ iqa_val:
     iqa_vne: Vne(A,A)
     iqa_vee: Vee(A,A)
     iqa_inter: E_IQA_Inter(A)
+    # Edge-level pairwise IQA components
+    iqa_inter_edge: E_IQA_Inter(A,B)/2
+    iqa_vee_edge: Vee(A,B)/2
+    iqa_vne_edge: Vne(A,B)/2
+    iqa_ven_edge: Ven(A,B)/2
+    iqa_vnn_edge: Vnn(A,B)/2

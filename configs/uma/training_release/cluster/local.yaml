@@ -12,5 +12,5 @@ mem_gb: 0
 cpus_per_task: 4
 timeout_hr: "48"
 partition: paula
-max_atoms: 20
+max_atoms: 10  # Reduced for local testing to avoid OOM
 
