@@ -57,7 +57,7 @@ train_dataloader:
   batch_sampler_fn:
     _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
     _partial_: True
-    max_atoms: ${max_atoms}
+    max_atoms: ${cluster.max_atoms}
     shuffle: True
     seed: 123
   num_workers: ${cluster.dataloader_workers}
@@ -72,7 +72,7 @@ eval_dataloader:
   batch_sampler_fn:
     _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
     _partial_: True
-    max_atoms: ${max_atoms}
+    max_atoms: ${cluster.max_atoms}
     shuffle: False
     seed: 123
   num_workers: ${cluster.dataloader_workers}
