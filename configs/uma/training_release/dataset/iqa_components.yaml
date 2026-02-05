@@ -9,6 +9,7 @@ iqa_train:
     iqa_kinetic: T(A)
     iqa_vne: Vne(A,A)
     iqa_vee: Vee(A,A)
+    iqa_inter: E_IQA_Inter(A)
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -21,3 +22,4 @@ iqa_val:
     iqa_kinetic: T(A)
     iqa_vne: Vne(A,A)
     iqa_vee: Vee(A,A)
+    iqa_inter: E_IQA_Inter(A)

@@ -44,6 +44,7 @@ direct_forces: False
 iqa_kinetic_coef: 1.0
 iqa_vne_coef: 1.0
 iqa_vee_coef: 1.0
+iqa_inter_coef: 1.0
 normalizer_rmsd: 1.423
 
 # --- Dataset Setup ---
@@ -87,6 +88,8 @@ heads:
   iqa_vne:
     module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
   iqa_vee:
+    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+  iqa_inter:
     module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
 
 runner:

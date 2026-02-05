@@ -60,3 +60,24 @@
     iqa_vee:
       prediction_key: pred
       label_key: iqa_vee
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_inter
+  level: atom
+  property: pred
+  datasets: ["iqa_pkl"] # needed for the finetuning setup
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_inter_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_inter:
+      prediction_key: pred
+      label_key: iqa_inter
