@@ -16,9 +16,6 @@ job:
       mem_gb: ${cluster.mem_gb}
       cpus_per_task: ${cluster.cpus_per_task}
       timeout_hr: "${cluster.timeout_hr}"
-      additional_parameters:
-        export: "ALL,NCCL_SOCKET_FAMILY=AF_INET,GLOO_SOCKET_FAMILY=AF_INET,PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
-        gpus: "v100"
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
   run_name: iqa_pretrain_3term
@@ -38,21 +35,24 @@ moe_layer_type: pytorch
 num_moe_experts: 32
 otf_graph: False
 max_neighbors: 30
-cutoff_radius: 6.0
+cutoff_radius: 7.0
 regress_stress: False
 direct_forces: False
 
-iqa_kinetic_coef: 1.0
-iqa_vne_coef: 1.0
-iqa_vee_coef: 1.0
-iqa_inter_coef: 1.0
-# Edge-level coefficients
-iqa_inter_edge_coef: 1.0
-iqa_vee_edge_coef: 1.0
-iqa_vne_edge_coef: 1.0
-iqa_ven_edge_coef: 1.0
-iqa_vnn_edge_coef: 1.0
+# iqa_kinetic_coef: 1.0
+# iqa_vne_coef: 1.0
+# iqa_vee_coef: 1.0
+# iqa_inter_coef: 1.0
+# # Edge-level coefficients
+# iqa_inter_edge_coef: 1.0
+# iqa_vee_edge_coef: 1.0
+# iqa_vne_edge_coef: 1.0
+# iqa_ven_edge_coef: 1.0
+# iqa_vnn_edge_coef: 1.0
 normalizer_rmsd: 1.423
+iqa_intra_a_coef: 1.0
+iqa_inter_a_coef: 1.0
+iqa_inter_ab_coef: 1.0
 
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
@@ -90,24 +90,30 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  iqa_kinetic:
+  # iqa_kinetic:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+  # iqa_vne:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+  # iqa_vee:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+  # iqa_inter:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
+  # # Edge-level heads for pairwise interactions
+  # iqa_inter_edge:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
+  # iqa_vee_edge:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
+  # iqa_vne_edge:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
+  # iqa_ven_edge:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
+  # iqa_vnn_edge:
+  #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
+  iqa_intra_a:
     module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-  iqa_vne:
+  iqa_inter_a:
     module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-  iqa_vee:
-    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-  iqa_inter:
-    module: fairchem.core.models.uma.escn_md.IQA_Energy_Head
-  # Edge-level heads for pairwise interactions
-  iqa_inter_edge:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
-  iqa_vee_edge:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
-  iqa_vne_edge:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
-  iqa_ven_edge:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
-  iqa_vnn_edge:
+  iqa_inter_ab:
     module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
 
 runner:

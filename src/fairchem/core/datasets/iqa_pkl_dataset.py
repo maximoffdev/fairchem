@@ -205,7 +205,14 @@ class IQAPKLDataset(BaseDataset):
         cell_offsets = torch.zeros(E, 3, dtype=pos.dtype)
         nedges = torch.tensor([E], dtype=torch.long)
         natoms = torch.tensor([N], dtype=torch.long)
-        charge = torch.zeros(1, dtype=torch.long)   # system charge (int)
+        
+        # Load q_total as charge if available
+        q_total = _first_present(d, "q_total")
+        if q_total is not None:
+            charge = torch.tensor([int(q_total)], dtype=torch.long)
+        else:
+            charge = torch.zeros(1, dtype=torch.long)   # default to neutral
+        
         spin   = torch.zeros(1, dtype=torch.long)   # system spin (int)
         fixed  = torch.zeros(N, dtype=torch.long)   # per-node flags
         tags   = torch.zeros(N, dtype=torch.long)   # per-node tags
