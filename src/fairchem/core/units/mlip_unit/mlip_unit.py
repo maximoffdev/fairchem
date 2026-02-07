@@ -211,9 +211,7 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
             # Ensure mask is at least 1D after checking finite values
             if output_masks[task.name].dim() > 1:
                 output_masks[task.name] = output_masks[task.name].all(dim=-1)
-            # Expand mask to match target shape if needed
-            dset_mask = dset_mask.view(-1, 1) if output_masks[task.name].dim() == 1 else dset_mask
-            output_masks[task.name] = output_masks[task.name].view(-1, 1) if output_masks[task.name].dim() == 1 else output_masks[task.name]
+            # For edge tasks, keep masks 1D for proper boolean indexing
             output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
         else:
             output_masks[f"{dset}.{task.name}"] = dset_mask & output_masks[task.name]
