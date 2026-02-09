@@ -7,7 +7,7 @@ qos: null
 mode: SLURM
 device: CUDA
 ranks_per_node: 8
-dataloader_workers: 8
+dataloader_workers: 0
 debug: False
 mem_gb: 0
 cpus_per_task: 6

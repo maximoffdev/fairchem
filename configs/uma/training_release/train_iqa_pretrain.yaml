@@ -10,7 +10,7 @@ job:
   scheduler:
     mode: ${cluster.mode}
     ranks_per_node: ${cluster.ranks_per_node}
-    num_nodes: 1
+    num_nodes: 4
     slurm:
       partition: ${cluster.partition}
       mem_gb: ${cluster.mem_gb}
