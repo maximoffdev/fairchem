@@ -13,4 +13,4 @@ mem_gb: 0
 cpus_per_task: 6
 timeout_hr: "168"
 partition: alpha
-max_atoms: 360
+max_atoms: 240  # Reduced from 360 to fit K10L4 in 40GB VRAM
