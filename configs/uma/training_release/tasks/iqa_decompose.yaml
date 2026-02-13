@@ -105,89 +105,89 @@
 #       prediction_key: pred
 #       label_key: iqa_inter_edge
 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_vee_edge
-#   level: edge
-#   property: pred
-#   datasets: ["iqa_pkl"]
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_vee_edge_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: 0.0
-#     rmsd: ${normalizer_rmsd}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_vee_edge:
-#       prediction_key: pred
-#       label_key: iqa_vee_edge
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_edge
+  level: edge
+  property: pred
+  datasets: ["iqa_pkl"]
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_edge_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vee_edge:
+      prediction_key: pred
+      label_key: iqa_vee_edge
 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_vne_edge
-#   level: edge
-#   property: pred
-#   datasets: ["iqa_pkl"]
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_vne_edge_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: 0.0
-#     rmsd: ${normalizer_rmsd}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_vne_edge:
-#       prediction_key: pred
-#       label_key: iqa_vne_edge
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne_edge
+  level: edge
+  property: pred
+  datasets: ["iqa_pkl"]
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vne_edge_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vne_edge:
+      prediction_key: pred
+      label_key: iqa_vne_edge
 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_ven_edge
-#   level: edge
-#   property: pred
-#   datasets: ["iqa_pkl"]
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_ven_edge_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: 0.0
-#     rmsd: ${normalizer_rmsd}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_ven_edge:
-#       prediction_key: pred
-#       label_key: iqa_ven_edge
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_ven_edge
+  level: edge
+  property: pred
+  datasets: ["iqa_pkl"]
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_ven_edge_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_ven_edge:
+      prediction_key: pred
+      label_key: iqa_ven_edge
 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_vnn_edge
-#   level: edge
-#   property: pred
-#   datasets: ["iqa_pkl"]
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_vnn_edge_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: 0.0
-#     rmsd: ${normalizer_rmsd}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_vnn_edge:
-#       prediction_key: pred
-#       label_key: iqa_vnn_edge
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vnn_edge
+  level: edge
+  property: pred
+  datasets: ["iqa_pkl"]
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vnn_edge_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vnn_edge:
+      prediction_key: pred
+      label_key: iqa_vnn_edge
 
 # - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
 #   name: iqa_intra_a
@@ -231,23 +231,23 @@
 #       prediction_key: pred
 #       label_key: iqa_inter_a
 
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_inter_ab
-  level: edge
-  property: pred
-  datasets: ["iqa_pkl"]
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_inter_ab_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_inter_ab:
-      prediction_key: pred
-      label_key: iqa_inter_ab
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: iqa_inter_ab
+#   level: edge
+#   property: pred
+#   datasets: ["iqa_pkl"]
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${iqa_inter_ab_coef}
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [1]
+#     dtype: float32
+#     iqa_inter_ab:
+#       prediction_key: pred
+#       label_key: iqa_inter_ab
