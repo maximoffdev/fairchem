@@ -78,6 +78,46 @@ class ElementReferences(nn.Module):
         )
 
 
+class AtomElementReferences(nn.Module):
+    """Per-atom element references — subtracts a fixed per-element scalar from
+    each atom's target value before computing the loss, and adds it back at
+    inference.  Unlike ElementReferences (which sums refs over all atoms in a
+    structure to produce a single system-level offset), this class operates
+    directly on per-atom tensors of shape [N_atoms], performing a simple
+    element-wise lookup without any scatter-reduce.
+
+    Typical use: normalise per-atom IQA intra-atomic energies
+    E_IQA_Intra(A) by subtracting the corresponding isolated-atom reference
+    energy r_{Z_i}, so the model learns only the small bonding residual
+    δ_i = E_IQA_Intra(A_i) - r_{Z_i}.
+    """
+
+    def __init__(self, element_references: torch.Tensor):
+        """
+        Args:
+            element_references: 1-D tensor of length ≥ 119 where index Z holds
+                the reference value (in the same units as the training labels)
+                for atomic number Z.  Unused elements should be 0.0.
+        """
+        super().__init__()
+        self.register_buffer("element_references", element_references)
+
+    def _lookup(self, batch: AtomicData) -> torch.Tensor:
+        return self.element_references[batch.atomic_numbers_full]
+
+    def apply_refs(self, batch: AtomicData, tensor: torch.Tensor) -> torch.Tensor:
+        """Subtract per-atom reference from target labels before loss."""
+        with torch.autocast(self.element_references.device.type, enabled=False):
+            refs = self._lookup(batch).to(tensor.dtype)
+            return tensor - refs
+
+    def undo_refs(self, batch: AtomicData, tensor: torch.Tensor) -> torch.Tensor:
+        """Add per-atom reference back to model predictions at inference."""
+        with torch.autocast(self.element_references.device.type, enabled=False):
+            refs = self._lookup(batch).to(tensor.dtype)
+            return tensor + refs
+
+
 class LinearReferences(nn.Module):
     """Represents an elemental linear references model for a target property.
 
