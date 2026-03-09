@@ -15,6 +15,9 @@ cpus_per_task: 4
 timeout_hr: "48"
 partition: clara
 max_atoms: 360
+max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
+num_moe_experts: 32
+cpu_graph: False
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:

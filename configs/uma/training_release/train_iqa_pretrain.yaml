@@ -30,16 +30,16 @@ job:
 # --- Runtime Hyperparameters ---
 steps: 100000
 bf16: True
-# cpu_graph: True
 
-# --- Backbone/Model Variables (Required by K10L4) ---
+# --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
 moe_layer_type: pytorch
-num_moe_experts: 32
+num_moe_experts: ${cluster.num_moe_experts}
 otf_graph: False
-max_neighbors: 30
+max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: 7.0
 regress_stress: False
 direct_forces: False
+cpu_graph: ${cluster.cpu_graph}
 
 # iqa_kinetic_coef: 1.0
 # iqa_vne_coef: 1.0
