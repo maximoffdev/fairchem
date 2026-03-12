@@ -22,7 +22,6 @@ partition: alpha
 max_atoms: 80          # was 120; primary VRAM lever (atoms per GPU per batch)
 max_neighbors: 20      # was 30; fewer edges = less edge-feature memory (important with edge IQA heads)
 num_moe_experts: 32    # reduce to 16 if still OOM (impacts model capacity)
-cpu_graph: True        # build neighbor graph on CPU, frees GPU memory for activations
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:
