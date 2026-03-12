@@ -9,7 +9,7 @@ qos: null
 mode: SLURM
 device: CUDA
 ranks_per_node: 8
-distributed_init_method: tcp
+distributed_init_method: TCP
 dataloader_workers: 0
 debug: False
 mem_gb: 0
