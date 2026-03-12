@@ -9,6 +9,7 @@ qos: null
 mode: SLURM
 device: CUDA
 ranks_per_node: 8
+distributed_init_method: tcp
 dataloader_workers: 0
 debug: False
 mem_gb: 0
@@ -25,8 +26,9 @@ cpu_graph: True        # build neighbor graph on CPU, frees GPU memory for activ
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:
-  - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; rm -rf /tmp/iqa_data' EXIT"
-  - "echo \"[setup] Copying dataset to local NVMe...\""
-  - "mkdir -p /tmp/iqa_data"
-  - "rsync -aW --info=progress2 /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/"
-  - "echo \"[setup] Dataset copy complete.\""
+  # The batch script only runs on the head node, so we use 'srun' to run one
+  # rsync per node in parallel, ensuring all nodes have the data in /tmp.
+  - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; srun --ntasks=${SLURM_NNODES} --ntasks-per-node=1 rm -rf /tmp/iqa_data' EXIT"
+  - "echo \"[setup] Copying dataset to local NVMe on all nodes...\""
+  - "srun --ntasks=${SLURM_NNODES} --ntasks-per-node=1 bash -c 'mkdir -p /tmp/iqa_data && rsync -aW /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/'"
+  - "echo \"[setup] Dataset copy complete on all nodes.\""

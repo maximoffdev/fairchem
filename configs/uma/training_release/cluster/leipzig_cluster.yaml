@@ -8,6 +8,9 @@ qos: null
 mode: SLURM
 device: CUDA
 ranks_per_node: 8
+# Use file-based distributed init to avoid IPv6/TCP socket issues on the Clara partition
+# (errno 97: EAFNOSUPPORT when nodes resolve to IPv6 but network only supports IPv4)
+distributed_init_method: file
 dataloader_workers: 0
 debug: true
 mem_gb: "0"
@@ -21,8 +24,9 @@ cpu_graph: False
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:
-  - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; rm -rf /tmp/iqa_data' EXIT"
-  - "echo \"[setup] Copying dataset to local NVMe...\""
-  - "mkdir -p /tmp/iqa_data"
-  - "rsync -aW --info=progress2 /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/"
-  - "echo \"[setup] Dataset copy complete.\""
+  # The batch script only runs on the head node, so we use 'srun' to run one
+  # rsync per node in parallel, ensuring all nodes have the data in /tmp.
+  - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; srun --ntasks=${SLURM_NNODES} --ntasks-per-node=1 rm -rf /tmp/iqa_data' EXIT"
+  - "echo \"[setup] Copying dataset to local NVMe on all nodes...\""
+  - "srun --ntasks=${SLURM_NNODES} --ntasks-per-node=1 bash -c 'mkdir -p /tmp/iqa_data && rsync -aW /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/'"
+  - "echo \"[setup] Dataset copy complete on all nodes.\""

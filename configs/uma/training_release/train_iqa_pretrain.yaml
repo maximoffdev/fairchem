@@ -11,6 +11,7 @@ job:
   scheduler:
     mode: ${cluster.mode}
     ranks_per_node: ${cluster.ranks_per_node}
+    distributed_init_method: ${cluster.distributed_init_method}
     num_nodes: 2
     slurm:
       partition: ${cluster.partition}
