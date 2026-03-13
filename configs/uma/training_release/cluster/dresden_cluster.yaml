@@ -22,5 +22,5 @@ cutoff_radius: 7.0     # Å; matched to K10L4 backbone default
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:
-	- mkdir -p /tmp/iqa_data
-	- srun --ntasks-per-node=1 bash -lc 'mkdir -p /tmp/iqa_data && rsync -a --delete /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/'
+  - "mkdir -p /tmp/iqa_data"
+  - "srun --ntasks-per-node=1 bash -lc 'mkdir -p /tmp/iqa_data && rsync -a --delete /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/'"
