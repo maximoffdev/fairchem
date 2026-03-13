@@ -1,5 +1,5 @@
-# One-node fast-I/O trial: copy dataset to local NVMe on the allocated node.
-data_root_dir: /tmp/iqa_data
+# Use shared storage for multi-node stability.
+data_root_dir: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
 original_data_root_dir: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
 run_dir: /work/rh41uvuh-iqa_train_2/iqa
 #run_dir: ${oc.env:PWD}/runs
@@ -20,9 +20,4 @@ partition: clara
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 32
-setup_commands:
-  - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; rm -rf /tmp/iqa_data' EXIT"
-  - "echo \"[setup] Copying dataset to local NVMe...\""
-  - "mkdir -p /tmp/iqa_data"
-  - "rsync -aW --info=progress2 /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/"
-  - "echo \"[setup] Dataset copy complete.\""
+setup_commands: []
