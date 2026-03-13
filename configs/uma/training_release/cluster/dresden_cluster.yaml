@@ -1,5 +1,6 @@
 # Data is rsync'd to local NVMe before training (see setup_commands below)
-data_root_dir: /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001
+data_root_dir: /tmp/iqa_data
+original_data_root_dir: /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001
 run_dir: /data/horse/ws/maho053h-iqa-training/iqa
 
 #run_dir: ${oc.env:PWD}/runs
@@ -9,17 +10,17 @@ mode: SLURM
 device: CUDA
 ranks_per_node: 8
 dataloader_workers: 0
-debug: False
-mem_gb: 0
+debug: true
+mem_gb: "0"
 cpus_per_task: 6
-timeout_hr: "168"
+timeout_hr: "48"
 partition: alpha
-# --- VRAM tuning for K10L4 on 40GB GPUs ---
-# Reducing max_atoms and max_neighbors is the safest way to fit in VRAM.
-# activation_checkpointing is already enabled in K10L4.yaml.
-max_atoms: 80          # was 120; primary VRAM lever (atoms per GPU per batch)
-max_neighbors: 20      # was 30; fewer edges = less edge-feature memory (important with edge IQA heads)
-num_moe_experts: 32    # reduce to 16 if still OOM (impacts model capacity)
+max_atoms: 360
+max_neighbors: 30
+num_moe_experts: 32
+cutoff_radius: 7.0     # Å; matched to K10L4 backbone default
 # Commands injected by submitit before the Python worker starts.
 # Copies dataset from shared storage to node-local NVMe for fast I/O.
-setup_commands: []
+setup_commands:
+	- mkdir -p /tmp/iqa_data
+	- srun --ntasks-per-node=1 bash -lc 'mkdir -p /tmp/iqa_data && rsync -a --delete ${original_data_root_dir}/ /tmp/iqa_data/'
