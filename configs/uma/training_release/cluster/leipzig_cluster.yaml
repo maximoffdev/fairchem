@@ -8,9 +8,6 @@ qos: null
 mode: SLURM
 device: CUDA
 ranks_per_node: 8
-# Use file-based distributed init to avoid IPv6/TCP socket issues on the Clara partition
-# (errno 97: EAFNOSUPPORT when nodes resolve to IPv6 but network only supports IPv4)
-distributed_init_method: FILE
 dataloader_workers: 0
 debug: true
 mem_gb: "0"
