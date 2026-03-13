@@ -1,4 +1,4 @@
-# Data is rsync'd to local NVMe before training (see setup_commands below)
+# One-node fast-I/O trial: copy dataset to local NVMe on the allocated node.
 data_root_dir: /tmp/iqa_data
 original_data_root_dir: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
 run_dir: /work/rh41uvuh-iqa_train_2/iqa
@@ -20,8 +20,6 @@ partition: clara
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 32
-# Commands injected by submitit before the Python worker starts.
-# Copies dataset from shared storage to node-local NVMe for fast I/O.
 setup_commands:
   - "trap 'echo \"[cleanup] Removing /tmp/iqa_data...\"; rm -rf /tmp/iqa_data' EXIT"
   - "echo \"[setup] Copying dataset to local NVMe...\""
