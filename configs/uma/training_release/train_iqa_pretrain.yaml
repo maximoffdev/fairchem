@@ -28,7 +28,7 @@ job:
     #    project: uma-iqa
 
 # --- Runtime Hyperparameters ---
-steps: 100000
+steps: 500000
 bf16: True
 
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---

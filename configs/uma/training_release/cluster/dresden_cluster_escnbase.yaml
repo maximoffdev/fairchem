@@ -1,0 +1,29 @@
+# Dresden cluster config mimicking the ESCNbase / EquFormerV2-Small training setup.
+# Data is staged to node-local NVMe for faster per-step dataloader I/O.
+data_root_dir: /tmp/iqa_data
+original_data_root_dir: /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001
+run_dir: /data/horse/ws/maho053h-iqa-training/iqa
+
+account: null
+qos: null
+mode: SLURM
+device: CUDA
+ranks_per_node: 8
+dataloader_workers: 0
+debug: False
+mem_gb: 0
+cpus_per_task: 6
+timeout_hr: "168"
+partition: alpha
+
+# --- Architecture: mimicking ESCNbase (sphere_channels=32, lmax=5, 6 layers) ---
+# Model is much smaller than K10L4 but uses wider cutoff and far more neighbors.
+# Edge count ≈ max_atoms × max_neighbors → VRAM gain from smaller channels is partially offset.
+max_atoms: 100          # conservative start; increase if VRAM allows
+max_neighbors: 100      # original setup; 5× more than K10L4 default
+num_moe_experts: 1      # no MoE (matches original non-MoE config)
+cutoff_radius: 7.0
+
+setup_commands:
+  - "mkdir -p /tmp/iqa_data"
+  - "srun --ntasks-per-node=1 bash -lc 'mkdir -p /tmp/iqa_data && rsync -a --delete /data/horse/ws/maho053h-iqa-training/HCNOSPClF_combined_datasets_filtered0.001/ /tmp/iqa_data/'"
