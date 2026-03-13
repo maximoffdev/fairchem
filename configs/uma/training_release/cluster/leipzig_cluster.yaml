@@ -1,6 +1,5 @@
 # Use shared storage for multi-node stability.
 data_root_dir: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
-original_data_root_dir: /work/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
 run_dir: /work/rh41uvuh-iqa_train_2/iqa
 #run_dir: ${oc.env:PWD}/runs
 account: null
