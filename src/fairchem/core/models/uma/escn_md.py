@@ -995,6 +995,57 @@ class IQA_Edge_Head(nn.Module, HeadInterface):
         
         return {"pred": e}
 
+class IQA_Node_Head2(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+
+    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
+        #print("node emb", emb["node_embedding"].shape)
+        forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
+        forces = forces.narrow(1, 0, 1)
+        forces = forces.squeeze().contiguous()
+        if gp_utils.initialized():
+            forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
+        return {"pred": forces}
+
+# class IQA_Edge_Head2(nn.Module, HeadInterface):
+#     def __init__(self, backbone: eSCNMDBackbone) -> None:
+#         super().__init__()
+#         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+
+#     def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
+#         print("Edge emb", emb["node_embedding"].shape)
+#         forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
+#         forces = forces.narrow(1, 0, 1)
+#         print("Forces shape before reshape:", forces.shape)
+#         forces = forces.squeeze().contiguous()
+#         if gp_utils.initialized():
+#             forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
+#         return {"pred": forces}
+
+class IQA_Edge_Head2(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        # Edge embeddings are 1D features, not spherical harmonics
+        # So we use a simple linear layer instead of SO3_Linear
+        self.linear = nn.Linear(backbone.edge_channels_list[0], 1)
+
+    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
+        if "edge_embedding" not in emb:
+            raise ValueError("IQA_Edge_Head2 requires 'edge_embedding' in emb dict. "
+                           "Set backbone output_edge_features=True")
+        
+        edge_emb = emb["edge_embedding"]  # (num_edges, edge_input_dim)
+        #print("Edge emb shape:", edge_emb.shape)
+        
+        # Simple linear projection to scalar
+        pred = self.linear(edge_emb).squeeze(-1)  # (num_edges,)
+        
+        if gp_utils.initialized():
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+        
+        return {"pred": pred}
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
