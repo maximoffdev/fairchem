@@ -2,7 +2,7 @@ defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_components
   - tasks: iqa_decompose
-  - backbone: K10L4
+    #- backbone: K10L4
   - element_refs: iso_atom_elem_refs
   - _self_
 
@@ -28,17 +28,17 @@ job:
     #    project: uma-iqa
 
 # --- Runtime Hyperparameters ---
-steps: 500000
+steps: 100000
 bf16: True
 
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
-moe_layer_type: pytorch
-num_moe_experts: ${cluster.num_moe_experts}
-otf_graph: False
-max_neighbors: ${cluster.max_neighbors}
-cutoff_radius: ${cluster.cutoff_radius}
-regress_stress: False
-direct_forces: False
+#moe_layer_type: pytorch
+#num_moe_experts: ${cluster.num_moe_experts}
+#otf_graph: False
+#max_neighbors: ${cluster.max_neighbors}
+#cutoff_radius: ${cluster.cutoff_radius}
+#regress_stress: False
+#direct_forces: False
 
 # iqa_kinetic_coef: 1.0
 # iqa_vne_coef: 1.0
@@ -56,7 +56,7 @@ iqa_inter_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
 
 # --- Dataset Setup ---
-dataset_list: ["iqa_pkl"]
+#dataset_list: ["iqa_pkl"]
 exclude_keys: ["source", "sid"]
 
 
@@ -126,8 +126,13 @@ runner:
     job_config: ${job}
     tasks: ${tasks}
     model:
-      _target_: fairchem.core.models.base.HydraModel
-      backbone: ${backbone}
+      #_target_: fairchem.core.models.base.HydraModel
+      #backbone: ${backbone}
+      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/be2896459a03fcde05e20d2fcefd11f450601fce/checkpoints/uma-s-1p2.pt
+      overrides:
+        freeze_backbone: true
+        pass_through_head_outputs: false
       heads: ${heads}
     optimizer_fn:
       _target_: torch.optim.AdamW
