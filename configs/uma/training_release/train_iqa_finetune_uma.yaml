@@ -5,4 +5,4 @@ defaults:
 job:
   run_name: iqa_finetune_uma_3term
 
-starting_checkpoint: "/checkpoint/ocp/shared/uma/202505-0117-1812-5a58/checkpoints/final/inference_ckpt.pt" # Update to your custom checkpoint output logic
+base_model_name: uma-s-1p1
