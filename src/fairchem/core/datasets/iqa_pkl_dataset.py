@@ -9,6 +9,7 @@ from fairchem.core.datasets.base_dataset import BaseDataset
 from fairchem.core.common.registry import registry
 from pathlib import Path
 import numpy as np
+from fairchem.core.datasets.atomic_data import AtomicData
 
 def angstrom_to_bohr(x: torch.Tensor) -> torch.Tensor:  # 1 Å = 1.8897261245650618 Bohr
     return x * 1.8897261245650618
@@ -24,26 +25,6 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
 
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
     return x * 27.211386245988
-
-from fairchem.core.datasets.atomic_data import AtomicData
-
-# ---- Canonical key mappings ----
-
-PAIR_KEYS_PKL_TO_CANON = {
-    # "V_IQA_Inter(A,B)/2": "pair_E_inter_2",  # (E,) total interatomic / 2
-    # "Vne(A,B)/2":         "pair_Vne_2",
-    # "Ven(A,B)/2":         "pair_Ven_2",
-    # "Vnn(A,B)/2":         "pair_Vnn_2",
-    # "VeeC(A,B)/2":        "pair_VeeC_2",
-    # "VeeX(A,B)/2":        "pair_VeeX_2",
-    # "E_IQA(A)":           "e_iqa_a",
-}
-
-SYSTEM_KEYS_PKL_TO_CANON = {
-    "e_total": "energy",  # 0-D scalar per system (will become shape [1])
-}
-
-# ---- helpers (self-contained) ----
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
@@ -94,17 +75,9 @@ def _tensor1d(x: Any) -> Optional[torch.Tensor]:
 
 @registry.register_dataset("iqa_pkl")
 class IQAPKLDataset(BaseDataset):
-    """
-    PKL dataset for IQA training:
-    - Loads files from a directory.
-    - Exposes system-level & per-edge labels under canonical, slash-free keys.
-    - Returns AtomicData with exactly the fields it expects.
-    """
-
     def __init__(
         self,
         src: str,
-        enforce_consistent_keys: bool = True,
         key_mapping: Optional[Dict[str, str]] = None,
         name: str = "iqa_pkl",
         allow_missing_labels: bool = False,
@@ -113,7 +86,6 @@ class IQAPKLDataset(BaseDataset):
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
-        self.enforce_consistent_keys = enforce_consistent_keys
         self.key_mapping = key_mapping or {}
         self.allow_missing_labels = allow_missing_labels
         self.bohr2ang = bohr2ang
@@ -134,20 +106,8 @@ class IQAPKLDataset(BaseDataset):
         if not self.file_paths:
             raise FileNotFoundError(f"No .pkl files found under {self.src}")
 
-        if self.enforce_consistent_keys:
-            with open(self.file_paths[0], "rb") as f:
-                s0 = pickle.load(f)
-            _ = self._extract_available_keys(s0)
-
     def __len__(self) -> int:
         return len(self.file_paths)
-
-    def _extract_available_keys(self, sample: Any) -> Dict[str, bool]:
-        d = _to_mapping(sample)
-        _ = _require(d, "pos", "pos", "positions", "R")
-        _ = _require(d, "atomic_numbers", "atomic_numbers", "Z", "z", "numbers")
-        _ = _require(d, "edge_index", "edge_index", "edges")
-        return {k: True for k in d.keys()}
 
     def __getitem__(self, idx: int) -> AtomicData:
         path = self.file_paths[idx]
@@ -166,37 +126,14 @@ class IQAPKLDataset(BaseDataset):
                                      dtype=torch.long)                  # (2,E)
         N = int(pos.shape[0]); E = int(edge_index.shape[1])
 
-        # optional helpers the head may use
-        edge_vec    = _first_present(d, "edge_vec")
-        edge_length = _first_present(d, "edge_length")
-        if edge_vec is not None:    edge_vec = torch.as_tensor(edge_vec)
-        if edge_length is not None: edge_length = torch.as_tensor(edge_length)
-
         # --- labels (system + edge) ---
         labels: Dict[str, torch.Tensor] = {}
-
-        # system energy (scalar -> [1])
-        for src_key, canon in SYSTEM_KEYS_PKL_TO_CANON.items():
-            if src_key in d:
-                labels[canon] = torch.as_tensor(d[src_key], dtype=pos.dtype).view(1)
 
         # user key mapping (e.g., {"energy": "e_total"})
         for out_key, in_key in self.key_mapping.items():
             if in_key in d:
                 t = torch.as_tensor(d[in_key], dtype=pos.dtype)
                 labels[out_key] = t.view(1) if t.ndim == 0 else _tensor1d(t)
-
-        # per-edge IQA components -> (E,)
-        for pkl_key, canon in PAIR_KEYS_PKL_TO_CANON.items():
-            if pkl_key in d:
-                t1 = _tensor1d(d[pkl_key])
-                if t1 is None:
-                    continue
-                if t1.numel() != E:
-                    raise ValueError(
-                        f"Edge label '{pkl_key}' len={t1.numel()} != E={E} for {os.path.basename(path)}"
-                    )
-                labels[canon] = t1.to(pos.dtype)
 
         # --- build a VALID AtomicData (constructor accepts only fixed fields) ---
         # For non-PBC molecules, give zeros cell/pbc/offsets and fillers for required fields:
@@ -244,8 +181,6 @@ class IQAPKLDataset(BaseDataset):
 
         ad.dataset_name = self.name
 
-        # Generic handling for IQA components to ensure Unit Conversion (Ht -> eV) applies
-        # This allows you to add any new keys in the YAML key_mapping without changing code
         for out_key, val in labels.items():
             if out_key == "energy":
                 continue # Already handled
@@ -253,8 +188,6 @@ class IQAPKLDataset(BaseDataset):
             # Apply unit conversion if requested
             converted_val = Ht_to_eV(val) if self.ht2ev else val
 
-            # Use setattr to attach it to the AtomicData object
-            # e.g. ad.e_iqa_t = ...
             setattr(ad, out_key, converted_val)
 
         return ad
