@@ -21,24 +21,24 @@ job:
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
   run_name: iqa_pretrain_3term
-    #  logger:
-    #    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
-    #    _partial_: true
-    #    entity: fairchem
-    #    project: uma-iqa
+  logger:
+    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    _partial_: true
+    entity: lamerslab
+    project: iqa
 
 # --- Runtime Hyperparameters ---
 steps: 100000
 bf16: True
 
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
-#moe_layer_type: pytorch
-#num_moe_experts: ${cluster.num_moe_experts}
-#otf_graph: False
-#max_neighbors: ${cluster.max_neighbors}
-#cutoff_radius: ${cluster.cutoff_radius}
-#regress_stress: False
-#direct_forces: False
+moe_layer_type: pytorch
+num_moe_experts: ${cluster.num_moe_experts}
+otf_graph: False
+max_neighbors: ${cluster.max_neighbors}
+cutoff_radius: ${cluster.cutoff_radius}
+regress_stress: False
+direct_forces: False
 
 # iqa_kinetic_coef: 1.0
 # iqa_vne_coef: 1.0
@@ -56,7 +56,7 @@ iqa_inter_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
 
 # --- Dataset Setup ---
-#dataset_list: ["iqa_pkl"]
+dataset_list: ["iqa_pkl"]
 exclude_keys: ["source", "sid"]
 
 
