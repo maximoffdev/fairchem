@@ -35,13 +35,6 @@ def load_inference_model(
     if overrides is not None:
         checkpoint.model_config = update_configs(checkpoint.model_config, overrides)
 
-    if (
-        "_target_" in checkpoint.model_config
-        and checkpoint.model_config["_target_"]
-        == "fairchem.core.models.base.HydraModel"
-        and "model_id" in checkpoint.model_config
-    ):
-        checkpoint.model_config.pop("model_id")
 
     model = hydra.utils.instantiate(checkpoint.model_config)
     if use_ema:

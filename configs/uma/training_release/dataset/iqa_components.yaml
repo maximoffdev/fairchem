@@ -1,7 +1,7 @@
 iqa_train:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
   src: ${cluster.data_root_dir}/train
-  name: iqa_pkl
+  name: ${dataset_list[0]}
   enforce_consistent_keys: true
   ht2ev: true
   key_mapping:
@@ -21,7 +21,7 @@ iqa_train:
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
   src: ${cluster.data_root_dir}/val
-  name: iqa_pkl
+  name: ${dataset_list[0]}
   enforce_consistent_keys: true
   ht2ev: true
   key_mapping:

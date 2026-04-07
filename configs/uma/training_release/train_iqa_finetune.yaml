@@ -42,6 +42,7 @@ iqa_intra_a_coef: 1.0
 iqa_inter_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
 
+dataset_list: ["omol"]
 exclude_keys: ["source", "sid"]
 
 train_dataloader:
@@ -101,6 +102,7 @@ runner:
           max_neighbors: ${max_neighbors}
           regress_stress: ${regress_stress}
           direct_forces: ${direct_forces}
+          output_edge_features: true
         freeze_backbone: true
         pass_through_head_outputs: false
       heads: ${heads}
