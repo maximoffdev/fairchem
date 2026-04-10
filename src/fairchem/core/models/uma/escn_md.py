@@ -1127,3 +1127,40 @@ class MLP_Stress_Head(nn.Module, HeadInterface):
         stress = compose_tensor(iso_stress.unsqueeze(1), aniso_stress)
 
         return {"stress": stress}
+
+class MLP_Dipole_scalar_Head(nn.Module):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        # Predict the scalar (magnitude) of the dipole moment
+        # no reduce because we want values for every atom
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+
+        # MLP for prediction
+        self.dipole_block = nn.Sequential(
+            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels, 1, bias=True)
+        )
+    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        scalar_features = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)
+        node_dipole = self.dipole_block(scalar_features).squeeze(-1)
+
+        # if parallel calculations used now combining them
+        if gp_utils.initialized():
+            node_dipole = gp_utils.gather_from_model_parallel_region(node_dipole, dim=0)
+        return {"dipole_scalar": node_dipole}
+    
+    #def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        
+        
+        #predict scalar dpm for each atom
+        #node_dipole = self.dipole_block(emb["node_embedding"]).view(-1)
+
+        #aggregate dpm over the batch
+        '''dipole = torch.zeros(len(data_dict["natoms"]), device=node_dipole.device, dtype=node_dipole.dtype) dipole.index_add_(0, data_dict["batch"], node_dipole)
+        if self.reduce == "mean":
+            dipole /= data_dict["natoms"]
+        return {"dipole_scalar": dipole}'''

@@ -257,3 +257,25 @@
     iqa_inter_ab:
       prediction_key: pred
       label_key: iqa_inter_ab
+
+# --- DPM ---
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: dipole_scalar
+  level: atom
+  property: pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${dipole_scalar_coef}   # define in train_iqa_pretrain.yaml
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: 1.0                         
+  out_spec:
+    dim: [1]
+    dtype: float32
+    dipole_mag:
+      prediction_key: dipole_scalar    # relates to Key {"dipole_scalar": ...}
+      label_key: dipole_scalar            # relates to Key in iqa_components (|Mu(A)|)
