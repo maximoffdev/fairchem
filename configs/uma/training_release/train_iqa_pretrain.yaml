@@ -111,12 +111,12 @@ heads:
   #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
   # iqa_vnn_edge:
   #   module: fairchem.core.models.uma.escn_md.IQA_Edge_Head
-  iqa_intra_a:
-    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
-  iqa_inter_a:
-    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
-  iqa_inter_ab:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head2
+  #iqa_intra_a:
+  #  module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
+  #iqa_inter_a:
+  #  module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
+  #iqa_inter_ab:
+  #  module: fairchem.core.models.uma.escn_md.IQA_Edge_Head2
   dipole_scalar:           #scalar DPM Head
     _target_: escn_md.MLP_Dipole_Scalar_Head
     backbone: ${backbone}
