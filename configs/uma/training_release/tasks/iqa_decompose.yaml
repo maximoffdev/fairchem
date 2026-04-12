@@ -276,6 +276,6 @@
   out_spec:
     dim: [1]
     dtype: float32
-    dipole_mag:
+    dipole_scalar:
       prediction_key: dipole_scalar    # relates to Key {"dipole_scalar": ...}
       label_key: dipole_scalar            # relates to Key in iqa_components (|Mu(A)|)

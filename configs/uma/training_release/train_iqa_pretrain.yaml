@@ -118,8 +118,7 @@ heads:
   #iqa_inter_ab:
   #  module: fairchem.core.models.uma.escn_md.IQA_Edge_Head2
   dipole_scalar:           #scalar DPM Head
-    _target_: escn_md.MLP_Dipole_Scalar_Head
-    backbone: ${backbone}
+    module: fairchem.core.models.uma.escn_md.MLP_Dipole_Scalar_Head
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
