@@ -17,6 +17,9 @@ iqa_train:
     # iqa_ven_edge: Ven(A,B)
     # iqa_vnn_edge: Vnn(A,B)
     dipole_scalar: "|Mu(A)|"
+    atomic_numbers: atomic_numbers
+    pos: pos
+    natoms: natoms
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -37,3 +40,7 @@ iqa_val:
     # iqa_ven_edge: Ven(A,B)
     # iqa_vnn_edge: Vnn(A,B)
     dipole_scalar: "|Mu(A)|"
+    dipole_scalar: "|Mu(A)|"
+    atomic_numbers: atomic_numbers
+    pos: pos
+    natoms: natoms
