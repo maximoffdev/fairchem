@@ -5,6 +5,7 @@ import pickle
 from typing import Any, Dict, Iterable, List, Optional
 
 import torch
+import torch_geometric
 from fairchem.core.datasets.base_dataset import BaseDataset
 from fairchem.core.common.registry import registry
 from pathlib import Path
@@ -111,8 +112,8 @@ class IQAPKLDataset(BaseDataset):
 
     def __getitem__(self, idx: int) -> AtomicData:
         path = self.file_paths[idx]
-        #with open(path, "rb") as f:
-        raw = torch.load(path, map_location="cpu", weights_only=False)
+        with open(path, "rb") as f:
+            raw = pickle.load(f)
         d = _to_mapping(raw)
 
         # --- base graph (strict shapes/dtypes) ---
@@ -204,13 +205,18 @@ class IQAPKLDataset(BaseDataset):
             filenames = []
             for p in self.file_paths:
                 try:
-                    s = torch.load(p, map_location="cpu", weights_only=True)
-                    # with open(p, "rb") as f:
-                    #     s = pickle.load(f)
+                    with open(p, "rb") as f:
+                         s = pickle.load(f)
                     m = _to_mapping(s)
-                    pos = _require(m, "pos", "pos", "positions", "R")
-                    n = int(torch.as_tensor(pos).shape[0])
-                except Exception:
+                    if hasattr(s, 'natoms'):
+                        n = int(s.natoms)
+                    else:
+                        pos = _require(m, "pos", "pos", "positions", "R")
+                        n = int(torch.as_tensor(pos).shape[0])
+                    if n == 0:
+                        print(f"Warning: file {p} has zero atoms. Check if it's a valid PKL file.")
+                except Exception as e:
+                    print(f"Error loading {p} for metadata: {e}. Setting natoms=0.")
                     n = 0
                 natoms.append(n)
                 filenames.append(os.path.relpath(p, first_dir))
