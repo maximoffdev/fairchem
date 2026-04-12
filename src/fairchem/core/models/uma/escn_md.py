@@ -1128,7 +1128,7 @@ class MLP_Stress_Head(nn.Module, HeadInterface):
 
         return {"stress": stress}
 
-class MLP_Dipole_scalar_Head(nn.Module):
+class MLP_Dipole_Scalar_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
         super().__init__()
         # Predict the scalar (magnitude) of the dipole moment

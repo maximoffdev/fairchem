@@ -189,80 +189,80 @@
 #       prediction_key: pred
 #       label_key: iqa_vnn_edge
 
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_intra_a
-  level: atom
-  property: pred
-  datasets: ${dataset_list}
-  element_references:
-    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-    element_references:
-      _target_: torch.DoubleTensor
-      _args_:
-        - ${element_refs.iqa_intra_elem_refs}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_intra_a_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_intra_a:
-      prediction_key: pred
-      label_key: iqa_intra_a
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: iqa_intra_a
+#   level: atom
+#   property: pred
+#   datasets: ${dataset_list}
+#   element_references:
+#     _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+#     element_references:
+#       _target_: torch.DoubleTensor
+#       _args_:
+#         - ${element_refs.iqa_intra_elem_refs}
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${iqa_intra_a_coef}
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [1]
+#     dtype: float32
+#     iqa_intra_a:
+#       prediction_key: pred
+#       label_key: iqa_intra_a
 
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_inter_a
-  level: atom
-  property: pred
-  datasets: ${dataset_list}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_inter_a_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_inter_a:
-      prediction_key: pred
-      label_key: iqa_inter_a
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: iqa_inter_a
+#   level: atom
+#   property: pred
+#   datasets: ${dataset_list}
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${iqa_inter_a_coef}
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [1]
+#     dtype: float32
+#     iqa_inter_a:
+#       prediction_key: pred
+#       label_key: iqa_inter_a
 
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_inter_ab
-  level: edge
-  property: pred
-  datasets: ${dataset_list}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_inter_ab_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_inter_ab:
-      prediction_key: pred
-      label_key: iqa_inter_ab
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: iqa_inter_ab
+#   level: edge
+#   property: pred
+#   datasets: ${dataset_list}
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${iqa_inter_ab_coef}
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [1]
+#     dtype: float32
+#     iqa_inter_ab:
+#       prediction_key: pred
+#       label_key: iqa_inter_ab
 
 # --- DPM ---
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: dipole_scalar
   level: atom
-  property: pred
+  property: dipole_scalar
   datasets: ${dataset_list}
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
@@ -272,7 +272,7 @@
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
-    rmsd: 1.0                         
+    rmsd: ${normalizer_rmsd}
   out_spec:
     dim: [1]
     dtype: float32
