@@ -1158,7 +1158,7 @@ class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone, property_name: str) -> None:
         super().__init__()
         #head should fit to Mu(A) and Mu_Intra(A)
-        self.property_name = backbone.property_name
+        self.property_name = property_name
         self.sphere_channels = backbone.sphere_channels
         # SO3_Linear transforms sphere channel, lmax=1 features to vector outputs 
         # from sphere channels 1 output vector per atom
