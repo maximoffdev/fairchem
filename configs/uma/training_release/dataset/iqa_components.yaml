@@ -19,7 +19,7 @@ iqa_train:
     # dipole_scalar: "|Mu(A)|"
     # dipole_vector: Mu(A)
     dipole_intra: Mu_Intra(A)
-   
+    # dipole_bond: Mu_Bond(A)
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -42,4 +42,5 @@ iqa_val:
     # dipole_scalar: "|Mu(A)|"
     # dipole_vector: Mu(A)
     dipole_intra: Mu_Intra(A)
+    # dipole_bond: Mu_Bond(A)
     

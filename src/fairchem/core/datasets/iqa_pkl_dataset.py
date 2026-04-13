@@ -129,12 +129,27 @@ class IQAPKLDataset(BaseDataset):
 
         # --- labels (system + edge) ---
         labels: Dict[str, torch.Tensor] = {}
-
-        # user key mapping (e.g., {"energy": "e_total"})
+        #new logic for tensor labels
         for out_key, in_key in self.key_mapping.items():
             if in_key in d:
-                t = torch.as_tensor(d[in_key], dtype=pos.dtype)
-                labels[out_key] = t.view(1) if t.ndim == 0 else _tensor1d(t)
+                val = d[in_key]
+                t = torch.as_tensor(val, dtype=pos.dtype)
+                
+                # If per-atom vector (N,3) -> keep
+                if t.ndim == 2 and t.shape[1] == 3:
+                    labels[out_key] = t
+                #if scalar -> tensor with shape (1,)
+                elif t.ndim == 1 or (t.ndim == 2 and t.shape[1] == 1):
+                    labels[out_key] = _tensor1d(t)
+                # single scalar
+                else:
+                    labels[out_key] = t.view(1) if t.ndim == 0 else t
+
+        # user key mapping (e.g., {"energy": "e_total"})
+        # for out_key, in_key in self.key_mapping.items():          #old version, not suited for tensors
+        #     if in_key in d:
+        #         t = torch.as_tensor(d[in_key], dtype=pos.dtype)
+        #         labels[out_key] = t.view(1) if t.ndim == 0 else _tensor1d(t)
 
         # --- build a VALID AtomicData (constructor accepts only fixed fields) ---
         # For non-PBC molecules, give zeros cell/pbc/offsets and fillers for required fields:
@@ -184,12 +199,17 @@ class IQAPKLDataset(BaseDataset):
 
         for out_key, val in labels.items():
             if out_key == "energy":
-                continue # Already handled
+                continue 
 
-            # Apply unit conversion if requested
-            converted_val = Ht_to_eV(val) if self.ht2ev else val
-
-            setattr(ad, out_key, converted_val)
+            # Einheiten-Logik:
+            if out_key in ["dipole_vector", "dipole_intra", "dipole_bond"]:
+                # do not convert dipole vectors
+                pass 
+            elif val.ndim == 1 and val.shape[0] == 1:
+                # Nur Energie-Skalare umrechnen
+                val = Ht_to_eV(val) if self.ht2ev else val
+            
+            setattr(ad, out_key, val)
 
         return ad
 
