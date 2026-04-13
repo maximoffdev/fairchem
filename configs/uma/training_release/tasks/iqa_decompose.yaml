@@ -259,23 +259,44 @@
 #       label_key: iqa_inter_ab
 
 # --- DPM ---
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: dipole_scalar
+#   level: atom
+#   property: dipole_scalar
+#   datasets: ${dataset_list}
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${dipole_scalar_coef}   # define in train_iqa_pretrain.yaml
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [1]
+#     dtype: float32
+#     dipole_scalar:
+#       prediction_key: dipole_scalar    # relates to Key {"dipole_scalar": ...}
+#       label_key: dipole_scalar            # relates to Key in iqa_components (|Mu(A)|)
+
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_scalar
+  name: dipole_vector
   level: atom
-  property: dipole_scalar
+  property: dipole_vector
   datasets: ${dataset_list}
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${dipole_scalar_coef}   # define in train_iqa_pretrain.yaml
+    coefficient: ${dipole_vector_coef}   # define in train_iqa_pretrain.yaml
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
     rmsd: ${normalizer_rmsd}
   out_spec:
-    dim: [1]
+    dim: [3]
     dtype: float32
-    dipole_scalar:
-      prediction_key: dipole_scalar    # relates to Key {"dipole_scalar": ...}
-      label_key: dipole_scalar            # relates to Key in iqa_components (|Mu(A)|)
+    dipole_vector:
+      prediction_key: dipole_vector    # relates to Key 
+      label_key: dipole_vector            # relates to Key in iqa_components (|Mu(A)|)

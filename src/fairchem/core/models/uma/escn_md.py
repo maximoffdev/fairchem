@@ -1153,14 +1153,29 @@ class MLP_Dipole_Scalar_Head(nn.Module, HeadInterface):
             node_dipole = gp_utils.gather_from_model_parallel_region(node_dipole, dim=0)
         return {"dipole_scalar": node_dipole}
     
-    #def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        
-        
-        #predict scalar dpm for each atom
-        #node_dipole = self.dipole_block(emb["node_embedding"]).view(-1)
 
-        #aggregate dpm over the batch
-        '''dipole = torch.zeros(len(data_dict["natoms"]), device=node_dipole.device, dtype=node_dipole.dtype) dipole.index_add_(0, data_dict["batch"], node_dipole)
-        if self.reduce == "mean":
-            dipole /= data_dict["natoms"]
-        return {"dipole_scalar": dipole}'''
+class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone, property_name: str) -> None:
+        super().__init__()
+        #head should fit to Mu(A) and Mu_Intra(A)
+        self.property_name = backbone.property_name
+        self.sphere_channels = backbone.sphere_channels
+        # SO3_Linear transforms sphere channel, lmax=1 features to vector outputs 
+        # from sphere channels 1 output vector per atom
+        self.linear = SO3_Linear(self.sphere_channels, 1, lmax=1)
+
+       
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        # Extrahiere L=0 und L=1 (Indizes 0 bis 3)
+        node_features = emb["node_embedding"].narrow(1, 0, 4)
+        res = self.linear(node_features)
+        
+        # Extrahiere den L=1 Anteil (Vektor) -> Indizes 1,2,3
+        vector = res.narrow(1, 1, 3).view(-1, 3).contiguous()
+        
+        if gp_utils.initialized():
+            vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
+            
+        return {self.property_name: vector}
+
