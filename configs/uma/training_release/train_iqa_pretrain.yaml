@@ -123,15 +123,8 @@ heads:
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Scalar_Head
   # dipole_vector:           #vectorial DPM Head
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-  # dipole_intra:           #vectorial, internal DPM Head
-  #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-  # Unter model -> heads:
-  # dipole_vector:
-  #   _target_: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-  #   property_name: "dipole_vector"
-  dipole_intra:
-    _target_: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-    property_name: "dipole_intra"
+  dipole_intra:           #vectorial, internal DPM Head
+    module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
