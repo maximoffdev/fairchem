@@ -552,7 +552,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         if self.output_edge_features:
             out["edge_embedding"] = x_edge
             out["edge_index"] = graph_dict["edge_index"]
-            
+            out["edge_distance_vec"] = graph_dict["edge_distance_vec"]
+
         return out
 
     def _init_gp_partitions(self, graph_dict, atomic_numbers_full):
@@ -1009,6 +1010,66 @@ class IQA_Edge_Head2(nn.Module, HeadInterface):
         if gp_utils.initialized():
             pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
         
+        return {"pred": pred}
+
+class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
+    def __init__(self, backbone, lmax=1):
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        self.backbone_lmax = backbone.lmax  # Get actual lmax from backbone
+
+        # Calculate edge embedding dimension: distance_basis + source_embedding + target_embedding
+        num_distance_basis = backbone.num_distance_basis
+        edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
+
+        # SO3_Linear: Process aggregated node features equivariantly
+        # Input shape: (num_edges, (lmax+1)^2, sphere_channels)
+        # Output shape: (num_edges, (lmax+1)^2, sphere_channels)
+        # Then we extract only L=0 component (index 0)
+        self.so3_layer = SO3_Linear(
+            in_features=self.sphere_channels,
+            out_features=self.sphere_channels,
+            lmax=self.backbone_lmax
+        )
+
+        # Modulation network: use invariant edge embeddings
+        # This is analogous to how the backbone uses RadialMLP to modulate edge features
+        self.edge_modulation = nn.Sequential(
+            nn.Linear(edge_embedding_dim, self.sphere_channels),
+            nn.SiLU(),
+            nn.Linear(self.sphere_channels, self.sphere_channels)
+        )
+
+        # Final linear projection to scalar
+        self.linear = nn.Linear(self.sphere_channels, 1)
+
+    def forward(self, data, emb):
+        edge_index = emb["edge_index"]
+        node_emb = emb["node_embedding"]  # (num_atoms, (lmax+1)^2, sphere_channels)
+        edge_embedding = emb["edge_embedding"]  # (num_edges, edge_embedding_dim) - invariant
+
+        # Get source/target node embeddings
+        src_emb = node_emb[edge_index[0]]  # (num_edges, (lmax+1)^2, sphere_channels)
+        tgt_emb = node_emb[edge_index[1]]  # (num_edges, (lmax+1)^2, sphere_channels)
+
+        # Combine source and target: sum preserves equivariance (linear combination of equivariant features)
+        # The message passing has already embedded edge geometry into these node features
+        edge_feat = src_emb + tgt_emb  # (num_edges, (lmax+1)^2, sphere_channels)
+
+        # Apply SO3_Linear to transform equivariantly
+        # Output shape: (num_edges, (lmax+1)^2, sphere_channels)
+        x = self.so3_layer(edge_feat)
+
+        # Extract only L=0 component (invariant scalar at index 0)
+        x = x.narrow(1, 0, 1)  # (num_edges, 1, sphere_channels)
+
+        # Modulate by edge embeddings (distance + element chemistry)
+        # This provides edge-specific invariant information to the prediction
+        modulation = self.edge_modulation(edge_embedding)  # (num_edges, sphere_channels)
+        x = x * modulation.unsqueeze(1)  # (num_edges, 1, sphere_channels)
+
+        # Final projection to scalar
+        pred = self.linear(x.squeeze(1)).squeeze(-1)  # (num_edges,)
         return {"pred": pred}
 
 class Linear_Force_Head(nn.Module, HeadInterface):

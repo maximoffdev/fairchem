@@ -115,7 +115,7 @@ heads:
   iqa_inter_a:
     module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
   iqa_inter_ab:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head2
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equivariant
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
