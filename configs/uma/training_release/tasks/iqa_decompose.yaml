@@ -332,8 +332,8 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.L2NormLoss
-    reduction: per_structure
-    coefficient: ${direct_forces_coef}
+    #reduction: per_structure
+    coefficient: ${dipole_intra_coef}
   out_spec:
     dim: [3]
     dtype: float32
