@@ -301,23 +301,50 @@
 #       prediction_key: dipole_vector    # relates to Key 
 #       label_key: dipole_vector            # relates to Key in iqa_components (|Mu(A)|)
 
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: dipole_intra
+#   level: atom
+#   property: dipole_intra
+#   datasets: ${dataset_list}
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.MAELoss
+#     coefficient: ${dipole_intra_coef}  # Koeffizient muss in train_iqa_pretrain definiert sein
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+#   out_spec:
+#     dim: [3]
+#     dtype: float32
+#     dipole_intra:
+#       prediction_key: dipole_intra
+#       label_key: dipole_intra
+
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_intra
+  name: forces
   level: atom
-  property: dipole_intra
-  datasets: ${dataset_list}
+  property: forces
+  train_on_free_atoms: True
+  eval_on_free_atoms: True
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${dipole_intra_coef}  # Koeffizient muss in train_iqa_pretrain definiert sein
+      _target_: fairchem.core.modules.loss.L2NormLoss
+    reduction: per_structure
+    coefficient: ${direct_forces_coef}
+  out_spec:
+    dim: [3]
+    dtype: float32
+  dipole_intra:
+      prediction_key: dipole_intra
+      label_key: dipole_intra
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
     rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [3]
-    dtype: float32
-    dipole_intra:
-      prediction_key: dipole_intra
-      label_key: dipole_intra
+  metrics:
+    - mae
+    - cosine_similarity
+    - magnitude_error
