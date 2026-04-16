@@ -6,12 +6,12 @@ account: null
 qos: null
 mode: SLURM
 device: CUDA
-ranks_per_node: 8
+ranks_per_node: 2
 dataloader_workers: 0
 debug: true
 mem_gb: "0"
 cpus_per_task: 4
-timeout_hr: "48"
+timeout_hr: "0.2"
 partition: clara
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
