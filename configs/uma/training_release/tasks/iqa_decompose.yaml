@@ -204,6 +204,7 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
+    reduction: "sum"
     coefficient: ${iqa_intra_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
@@ -225,6 +226,7 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
+    reduction: "sum"
     coefficient: ${iqa_inter_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
@@ -246,6 +248,7 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
+    reduction: "sum"
     coefficient: ${iqa_inter_ab_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer

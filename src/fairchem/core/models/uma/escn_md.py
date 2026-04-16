@@ -8,12 +8,15 @@ LICENSE file in the root directory of this source tree.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import TYPE_CHECKING, Literal, Dict
 
 import torch
 import torch.nn as nn
 from torch.profiler import record_function
+
+import torch_geometric.utils
 
 from fairchem.core.common import gp_utils
 from fairchem.core.common.distutils import get_device_for_local_rank
@@ -1016,16 +1019,13 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
     def __init__(self, backbone, lmax=1):
         super().__init__()
         self.sphere_channels = backbone.sphere_channels
-        self.backbone_lmax = backbone.lmax  # Get actual lmax from backbone
+        self.backbone_lmax = backbone.lmax
 
         # Calculate edge embedding dimension: distance_basis + source_embedding + target_embedding
         num_distance_basis = backbone.num_distance_basis
         edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
 
         # SO3_Linear: Process aggregated node features equivariantly
-        # Input shape: (num_edges, (lmax+1)^2, sphere_channels)
-        # Output shape: (num_edges, (lmax+1)^2, sphere_channels)
-        # Then we extract only L=0 component (index 0)
         self.so3_layer = SO3_Linear(
             in_features=self.sphere_channels,
             out_features=self.sphere_channels,
@@ -1033,7 +1033,6 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
         )
 
         # Modulation network: use invariant edge embeddings
-        # This is analogous to how the backbone uses RadialMLP to modulate edge features
         self.edge_modulation = nn.Sequential(
             nn.Linear(edge_embedding_dim, self.sphere_channels),
             nn.SiLU(),
@@ -1052,24 +1051,195 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
         src_emb = node_emb[edge_index[0]]  # (num_edges, (lmax+1)^2, sphere_channels)
         tgt_emb = node_emb[edge_index[1]]  # (num_edges, (lmax+1)^2, sphere_channels)
 
-        # Combine source and target: sum preserves equivariance (linear combination of equivariant features)
-        # The message passing has already embedded edge geometry into these node features
+        # Combine source and target: sum preserves equivariance
         edge_feat = src_emb + tgt_emb  # (num_edges, (lmax+1)^2, sphere_channels)
 
         # Apply SO3_Linear to transform equivariantly
-        # Output shape: (num_edges, (lmax+1)^2, sphere_channels)
         x = self.so3_layer(edge_feat)
 
         # Extract only L=0 component (invariant scalar at index 0)
         x = x.narrow(1, 0, 1)  # (num_edges, 1, sphere_channels)
 
         # Modulate by edge embeddings (distance + element chemistry)
-        # This provides edge-specific invariant information to the prediction
         modulation = self.edge_modulation(edge_embedding)  # (num_edges, sphere_channels)
         x = x * modulation.unsqueeze(1)  # (num_edges, 1, sphere_channels)
 
         # Final projection to scalar
         pred = self.linear(x.squeeze(1)).squeeze(-1)  # (num_edges,)
+        return {"pred": pred}
+
+
+class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
+    """
+    Equiformer-inspired edge head with attention mechanism.
+
+    Based on SO2EquivariantGraphAttentionNodeEdgePrediction from Equiformer.
+    Applies learnable attention weights to per-edge messages before extraction.
+
+    This provides better edge prediction by:
+    1. Preserving message geometry before aggregation
+    2. Computing per-edge attention weights
+    3. Weighting messages before projection to output
+    """
+
+    def __init__(self, backbone, num_heads: int = 4):
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        self.backbone_lmax = backbone.lmax
+        self.num_heads = num_heads
+
+        # Attention channel dimensions
+        self.attn_alpha_channels = self.sphere_channels // num_heads  # Alpha: per-head attention computation
+        self.attn_value_channels = self.sphere_channels // num_heads  # Value: per-head message storage
+
+        # Calculate edge embedding dimension
+        num_distance_basis = backbone.num_distance_basis
+        self.edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
+
+        # ============ Attention Mechanism ============
+        # Learnable attention projection (like alpha_dot parameter in Equiformer)
+        self.alpha_dot = nn.Parameter(
+            torch.randn(self.num_heads, self.attn_alpha_channels)
+        )
+        # Initialize with uniform distribution (following Equiformer)
+        std = 1.0 / math.sqrt(self.attn_alpha_channels)
+        nn.init.uniform_(self.alpha_dot, -std, std)
+
+        # Normalize and activate attention features
+        self.alpha_norm = nn.LayerNorm(self.attn_alpha_channels)
+        self.alpha_activation = nn.SiLU()
+
+        # Attention dropout
+        self.alpha_dropout = nn.Dropout(0.0)
+
+        # ============ Message Weighting Network ============
+        # Project edge embeddings to attention alpha vectors
+        self.edge_to_alpha = nn.Sequential(
+            nn.Linear(self.edge_embedding_dim, self.sphere_channels),
+            nn.SiLU(),
+            nn.Linear(self.sphere_channels, self.num_heads * self.attn_alpha_channels)
+        )
+
+        # ============ Output Projection ============
+        # SO3_Linear for equivariant projection
+        self.proj_edge_1 = SO3_Linear(
+            in_features=self.sphere_channels,
+            out_features=self.sphere_channels // 2,
+            lmax=self.backbone_lmax
+        )
+        self.proj_edge_2 = SO3_Linear(
+            in_features=self.sphere_channels // 2,
+            out_features=self.sphere_channels // 4,
+            lmax=self.backbone_lmax
+        )
+
+        # Final scalar projection (extract L=0 only)
+        self.linear_edge = nn.Linear(self.sphere_channels // 4, 1)
+
+    def forward(self, data, emb):
+        """
+        Forward pass for Equiformer-style edge prediction.
+
+        Args:
+            data: AtomicData object
+            emb: Dictionary containing:
+                - edge_embedding: (num_edges, edge_embedding_dim) - invariant edge features
+                - edge_index: (2, num_edges) - edge connectivity
+                - edge_messages: (num_edges, (lmax+1)^2, sphere_channels) - *optional* per-edge messages
+                - node_embedding: (num_atoms, (lmax+1)^2, sphere_channels) - node embeddings
+
+        Returns:
+            Dictionary with "pred" key containing (num_edges,) scalar predictions
+        """
+        edge_index = emb["edge_index"]
+        edge_embedding = emb["edge_embedding"]  # (num_edges, edge_embedding_dim)
+
+        # Try to use pre-computed edge messages if available, otherwise construct from nodes
+        if "edge_messages" in emb and emb["edge_messages"] is not None:
+            # Use messages captured before aggregation (more faithful to Equiformer)
+            edge_messages = emb["edge_messages"]  # (num_edges, (lmax+1)^2, sphere_channels)
+        else:
+            # Fallback: construct from node endpoints (less expressive but always available)
+            node_emb = emb["node_embedding"]  # (num_atoms, (lmax+1)^2, sphere_channels)
+            src_emb = node_emb[edge_index[0]]
+            tgt_emb = node_emb[edge_index[1]]
+            edge_messages = src_emb + tgt_emb
+
+        num_edges = edge_messages.shape[0]
+
+        # ============ Compute Attention Weights (Equiformer-style) ============
+        # Project edge embeddings to alpha vectors (per-edge attention computation)
+        alpha_features = self.edge_to_alpha(edge_embedding)  # (num_edges, num_heads * attn_alpha_channels)
+        alpha_features = alpha_features.view(num_edges, self.num_heads, self.attn_alpha_channels)
+
+        # Normalize and activate
+        alpha_features = self.alpha_norm(alpha_features)  # LayerNorm over attn_alpha_channels dimension
+        alpha_features = self.alpha_activation(alpha_features)  # SiLU activation
+
+        # Compute attention scores via learnable projection (dot product with alpha_dot)
+        # alpha shape: (num_edges, num_heads)
+        alpha = torch.einsum('bik,ik->bi', alpha_features, self.alpha_dot)
+
+        # Softmax normalization per target node (Equiformer applies softmax per target)
+        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])  # Softmax per target node
+
+        # Reshape for broadcasting:  (num_edges, 1, num_heads, 1)
+        alpha = alpha.view(num_edges, 1, self.num_heads, 1)
+
+        # Apply dropout
+        if self.alpha_dropout is not None:
+            alpha = self.alpha_dropout(alpha)
+
+        # ============ Weight Messages by Attention ============
+        # Reshape edge_messages to separate heads
+        # From: (num_edges, (lmax+1)^2, sphere_channels)
+        # To: (num_edges, (lmax+1)^2, num_heads, value_channels_per_head)
+        messages_reshaped = edge_messages.view(
+            num_edges,
+            edge_messages.shape[1],
+            self.num_heads,
+            self.attn_value_channels
+        )
+
+        # Weight by attention (element-wise multiplication)
+        messages_weighted = messages_reshaped * alpha  # Broadcasting: alpha has shape (num_edges, 1, num_heads, 1)
+
+        # Reshape back to (num_edges, (lmax+1)^2, sphere_channels)
+        messages_weighted = messages_weighted.view(
+            num_edges,
+            edge_messages.shape[1],
+            self.sphere_channels
+        )
+
+        # ============ Equivariant Projection ============
+        # Apply SO3_Linear projections (preserve spherical harmonic structure)
+        x = messages_weighted  # (num_edges, (lmax+1)^2, sphere_channels)
+
+        # Apply first SO3_Linear via einsum pattern (matches SO3_Linear forward)
+        # Einsum pattern: 'bmi,moi->bmo' preserves the spherical harmonics dimension 'm'
+        # b=batch (num_edges), m=(lmax+1)^2, i/o=feature dimensions
+        weight1 = torch.index_select(
+            self.proj_edge_1.weight, dim=0,
+            index=self.proj_edge_1.expand_index
+        )  # [(lmax+1)^2, sphere_channels//2, sphere_channels]
+
+        x_proj1 = torch.einsum('bmi,moi->bmo', x, weight1)  # (num_edges, (lmax+1)^2, sphere_channels//2)
+        x_proj1 = x_proj1 + self.proj_edge_1.bias.unsqueeze(0).unsqueeze(0)  # bias: (sphere_channels//2,)
+
+        # Second projection
+        weight2 = torch.index_select(
+            self.proj_edge_2.weight, dim=0,
+            index=self.proj_edge_2.expand_index
+        )
+        x_proj2 = torch.einsum('bmi,moi->bmo', x_proj1, weight2)  # (num_edges, (lmax+1)^2, sphere_channels//4)
+        x_proj2 = x_proj2 + self.proj_edge_2.bias.unsqueeze(0).unsqueeze(0)  # bias: (sphere_channels//4,)
+
+        # Extract L=0 component (index 0 in spherical harmonics dimension)
+        x_l0 = x_proj2[:, 0, :]  # (num_edges, sphere_channels//4)
+
+        # Final scalar projection
+        pred = self.linear_edge(x_l0).squeeze(-1)  # (num_edges,)
+
         return {"pred": pred}
 
 class Linear_Force_Head(nn.Module, HeadInterface):
