@@ -323,9 +323,9 @@
 #       label_key: dipole_intra
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: forces
+  name: dipole_intra
   level: atom
-  property: forces
+  property: pred
   datasets: ${dataset_list}
   # train_on_free_atoms: True
   # eval_on_free_atoms: True
@@ -339,7 +339,7 @@
     dim: [3]
     dtype: float32
     dipole_intra:
-        prediction_key: dipole_intra
+        prediction_key: pred
         label_key: dipole_intra
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
