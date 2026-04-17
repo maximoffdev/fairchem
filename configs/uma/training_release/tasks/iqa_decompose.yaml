@@ -326,6 +326,7 @@
   name: forces
   level: atom
   property: forces
+  datasets: ${dataset_list}
   # train_on_free_atoms: True
   # eval_on_free_atoms: True
   loss_fn:
