@@ -322,8 +322,35 @@
 #       prediction_key: dipole_intra
 #       label_key: dipole_intra
 
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: dipole_intra
+#   level: atom
+#   property: pred
+#   datasets: ${dataset_list}
+#   # train_on_free_atoms: True
+#   # eval_on_free_atoms: True
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.L2NormLoss
+#     #reduction: per_structure
+#     coefficient: ${dipole_intra_coef}
+#   out_spec:
+#     dim: [3]
+#     dtype: float32
+#     dipole_intra:
+#         prediction_key: pred
+#         label_key: dipole_intra
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+  # metrics:
+  #   - mae
+  #   - cosine_similarity
+  #   - magnitude_error
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_intra
+  name: dipole_vector
   level: atom
   property: pred
   datasets: ${dataset_list}
@@ -334,18 +361,14 @@
     loss_fn:
       _target_: fairchem.core.modules.loss.L2NormLoss
     #reduction: per_structure
-    coefficient: ${dipole_intra_coef}
+    coefficient: ${dipole_vector_coef}
   out_spec:
     dim: [3]
     dtype: float32
     dipole_intra:
         prediction_key: pred
-        label_key: dipole_intra
+        label_key: dipole_vector
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
     rmsd: ${normalizer_rmsd}
-  # metrics:
-  #   - mae
-  #   - cosine_similarity
-  #   - magnitude_error
