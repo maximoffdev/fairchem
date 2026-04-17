@@ -6,7 +6,7 @@ account: null
 qos: null
 mode: SLURM
 device: CUDA
-ranks_per_node: 2 #8 ursprünglich
+ranks_per_node: 8 #8 ursprünglich
 dataloader_workers: 0
 debug: true
 mem_gb: "0"
