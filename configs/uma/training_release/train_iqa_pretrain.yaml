@@ -50,7 +50,7 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_rmsd: 1.0
+normalizer_rmsd: 0.249023 #normally 1.0
 # iqa_intra_a_coef: 1.0
 # iqa_inter_a_coef: 1.0
 # iqa_inter_ab_coef: 1.0
