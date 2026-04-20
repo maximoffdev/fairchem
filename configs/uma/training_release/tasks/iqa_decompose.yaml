@@ -347,32 +347,8 @@
 #     rmsd: ${normalizer_rmsd}
   
 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: dipole_vector
-#   level: atom
-#   property: pred
-#   datasets: ${dataset_list}
-#   # train_on_free_atoms: True
-#   # eval_on_free_atoms: True
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.L2NormLoss
-#     #reduction: per_structure
-#     coefficient: ${dipole_vector_coef}
-#   out_spec:
-#     dim: [3]
-#     dtype: float32
-#     dipole_intra:
-#         prediction_key: pred
-#         label_key: dipole_vector
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: 0.0
-#     rmsd: ${normalizer_rmsd}
-
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_bond
+  name: dipole_vector
   level: atom
   property: pred
   datasets: ${dataset_list}
@@ -383,14 +359,38 @@
     loss_fn:
       _target_: fairchem.core.modules.loss.L2NormLoss
     #reduction: per_structure
-    coefficient: ${dipole_bond_coef}
+    coefficient: ${dipole_vector_coef}
   out_spec:
     dim: [3]
     dtype: float32
     dipole_intra:
         prediction_key: pred
-        label_key: dipole_bond
+        label_key: dipole_vector
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
     rmsd: ${normalizer_rmsd}
+
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: dipole_bond
+#   level: atom
+#   property: pred
+#   datasets: ${dataset_list}
+#   # train_on_free_atoms: True
+#   # eval_on_free_atoms: True
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.L2NormLoss
+#     #reduction: per_structure
+#     coefficient: ${dipole_bond_coef}
+#   out_spec:
+#     dim: [3]
+#     dtype: float32
+#     dipole_intra:
+#         prediction_key: pred
+#         label_key: dipole_bond
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
