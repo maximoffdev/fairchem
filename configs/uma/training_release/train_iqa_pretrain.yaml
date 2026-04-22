@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_layers6
+  run_name: dipole_pretrain_MuA_layers6_normalized
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -50,7 +50,7 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_rmsd: 1.0 #normally 1.0
+normalizer_rmsd: 0.353707 #normally 1.0
 # iqa_intra_a_coef: 1.0
 # iqa_inter_a_coef: 1.0
 # iqa_inter_ab_coef: 1.0
