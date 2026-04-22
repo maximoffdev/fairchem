@@ -8,7 +8,7 @@ mode: SLURM
 device: CUDA
 ranks_per_node: 8 #8 ursprünglich
 dataloader_workers: 0
-debug: true
+debug: false
 mem_gb: "0"
 cpus_per_task: 4 #4 ursprünglich
 timeout_hr: "48" #48 ursprünglich
