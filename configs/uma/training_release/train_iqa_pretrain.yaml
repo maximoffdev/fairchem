@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_Intra
+  run_name: dipole_pretrain_MuA_Bond
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -57,8 +57,8 @@ normalizer_rmsd: 1.0 #normally 1.0
 # --- DPM ---
 # dipole_scalar_coef: 1.0 #refers to decompose.yaml
 # dipole_vector_coef: 1.0
-dipole_intra_coef: 1.0
-# dipole_bond_coef: 1.0
+# dipole_intra_coef: 1.0
+dipole_bond_coef: 1.0
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
 exclude_keys: ["source", "sid"]
@@ -126,11 +126,11 @@ heads:
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
   # dipole_intra:           #vectorial, internal DPM Head
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-  dipole_intra:           
-    module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-    #property_name: dipole_intra
-  # dipole_bond:           #vectorial DPM Head
+  # dipole_intra:           
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
+    #property_name: dipole_intra
+  dipole_bond:           #vectorial DPM Head
+    module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
   
 
 runner:
