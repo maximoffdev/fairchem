@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -43,8 +44,10 @@ from fairchem.core.models.uma.nn.layer_norm import (
     get_normalization_layer,
 )
 from fairchem.core.models.uma.nn.mole_utils import MOLEInterface
-from fairchem.core.models.uma.nn.radial import GaussianSmearing
+from fairchem.core.models.uma.nn.radial import GaussianSmearing, RadialMLP
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
+from fairchem.core.models.uma.nn.so2_layers import SO2_Convolution
+from fairchem.core.models.uma.nn.activation import GateActivation, SeparableS2Activation
 from fairchem.core.models.utils.irreps import cg_change_mat, irreps_sum
 
 from .escn_md_block import eSCNMD_Block
@@ -1071,176 +1074,213 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
 
 class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
     """
-    Equiformer-inspired edge head with attention mechanism.
+    Exact implementation of SO2EquivariantGraphAttentionNodeEdgePrediction adapted for edge predictions.
 
-    Based on SO2EquivariantGraphAttentionNodeEdgePrediction from Equiformer.
-    Applies learnable attention weights to per-edge messages before extraction.
-
-    This provides better edge prediction by:
-    1. Preserving message geometry before aggregation
-    2. Computing per-edge attention weights
-    3. Weighting messages before projection to output
+    Uses SO(2)-equivariant convolutions with attention-weighted message passing for edge properties.
+    Follows the exact algorithm from Equiformer with learnable attention weights.
     """
 
-    def __init__(self, backbone, num_heads: int = 4):
+    def __init__(
+        self,
+        backbone,
+        num_heads: int = 4,
+        use_gate_act: bool = True,
+        use_sep_s2_act: bool = True,
+        alpha_drop: float = 0.0,
+    ):
         super().__init__()
+
         self.sphere_channels = backbone.sphere_channels
-        self.backbone_lmax = backbone.lmax
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        self.mmax = min(backbone.lmax, backbone.mmax) if hasattr(backbone, 'mmax') else backbone.lmax
         self.num_heads = num_heads
+        self.use_gate_act = use_gate_act
+        self.use_sep_s2_act = use_sep_s2_act
 
         # Attention channel dimensions
-        self.attn_alpha_channels = self.sphere_channels // num_heads  # Alpha: per-head attention computation
-        self.attn_value_channels = self.sphere_channels // num_heads  # Value: per-head message storage
+        self.attn_alpha_channels = self.sphere_channels // num_heads
+        self.attn_value_channels = self.sphere_channels // num_heads
 
-        # Calculate edge embedding dimension
+        # Create lmax_list and mmax_list for SO2_Convolution
+        self.lmax_list = [self.lmax]
+        self.mmax_list = [self.mmax]
+
+        # Get rotation and mapping utilities from backbone
+        self.SO3_rotation = backbone.SO3_rotation if hasattr(backbone, 'SO3_rotation') else None
+        self.mappingReduced = backbone.mappingReduced if hasattr(backbone, 'mappingReduced') else None
+        self.SO3_grid = backbone.SO3_grid if hasattr(backbone, 'SO3_grid') else None
+
         num_distance_basis = backbone.num_distance_basis
         self.edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
 
-        # ============ Attention Mechanism ============
-        # Learnable attention projection (like alpha_dot parameter in Equiformer)
-        self.alpha_dot = nn.Parameter(
-            torch.randn(self.num_heads, self.attn_alpha_channels)
-        )
-        # Initialize with uniform distribution (following Equiformer)
+        # ============ Attention Mechanism (Exact from Equiformer) ============
+        self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
+        self.alpha_act = nn.SiLU()  # SmoothLeakyReLU in original, but SiLU for compatibility
+        self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
         std = 1.0 / math.sqrt(self.attn_alpha_channels)
-        nn.init.uniform_(self.alpha_dot, -std, std)
+        torch.nn.init.uniform_(self.alpha_dot, -std, std)
 
-        # Normalize and activate attention features
-        self.alpha_norm = nn.LayerNorm(self.attn_alpha_channels)
-        self.alpha_activation = nn.SiLU()
+        self.alpha_dropout = None
+        if alpha_drop != 0.0:
+            self.alpha_dropout = torch.nn.Dropout(alpha_drop)
 
-        # Attention dropout
-        self.alpha_dropout = nn.Dropout(0.0)
+        # ============ SO(2) Convolution Blocks (Exact from Equiformer) ============
+        # Extra m0 output for attention weights
+        extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_gate_act:
+            extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
+        else:
+            if self.use_sep_s2_act:
+                extra_m0_output_channels = extra_m0_output_channels + self.hidden_channels
 
-        # ============ Message Weighting Network ============
-        # Project edge embeddings to attention alpha vectors
-        self.edge_to_alpha = nn.Sequential(
-            nn.Linear(self.edge_embedding_dim, self.sphere_channels),
-            nn.SiLU(),
-            nn.Linear(self.sphere_channels, self.num_heads * self.attn_alpha_channels)
+        # First SO(2)-convolution: 2*sphere_channels -> hidden_channels (due to concatenated messages)
+        self.so2_conv_1 = SO2_Convolution(
+            2 * self.sphere_channels,  # Input: concatenated source + target node embeddings
+            self.hidden_channels,
+            self.lmax_list[0],
+            self.mmax_list[0],
+            self.mappingReduced,
+            internal_weights=False,
+            edge_channels_list=[self.edge_embedding_dim, self.hidden_channels, self.hidden_channels],
+            extra_m0_output_channels=extra_m0_output_channels
         )
 
-        # ============ Output Projection ============
-        # SO3_Linear for equivariant projection
-        self.proj_edge_1 = SO3_Linear(
-            in_features=self.sphere_channels,
-            out_features=self.sphere_channels // 2,
-            lmax=self.backbone_lmax
-        )
-        self.proj_edge_2 = SO3_Linear(
-            in_features=self.sphere_channels // 2,
-            out_features=self.sphere_channels // 4,
-            lmax=self.backbone_lmax
+        # Activation layer (exact from Equiformer)
+        if self.use_gate_act:
+            self.gate_act = GateActivation(
+                lmax=max(self.lmax_list),
+                mmax=max(self.mmax_list),
+                num_channels=self.hidden_channels
+            )
+        else:
+            if self.use_sep_s2_act:
+                self.s2_act = SeparableS2Activation(
+                    lmax=max(self.lmax_list),
+                    mmax=max(self.mmax_list)
+                )
+            else:
+                from fairchem.core.models.uma.nn.activation import S2Activation
+                self.s2_act = S2Activation(
+                    lmax=max(self.lmax_list),
+                    mmax=max(self.mmax_list)
+                )
+
+        # Second SO(2)-convolution: hidden -> num_heads * attn_value_channels
+        self.so2_conv_2 = SO2_Convolution(
+            self.hidden_channels,
+            self.num_heads * self.attn_value_channels,
+            self.lmax_list[0],
+            self.mmax_list[0],
+            self.mappingReduced,
+            internal_weights=True,
+            edge_channels_list=None,
+            extra_m0_output_channels=None
         )
 
-        # Final scalar projection (extract L=0 only)
-        self.linear_edge = nn.Linear(self.sphere_channels // 4, 1)
+        # Final scalar projection
+        self.linear_edge = nn.Linear(self.attn_value_channels, 1)
 
     def forward(self, data, emb):
         """
-        Forward pass for Equiformer-style edge prediction.
+        Forward pass using exact SO2EquivariantGraphAttentionNodeEdgePrediction algorithm.
 
         Args:
             data: AtomicData object
-            emb: Dictionary containing:
-                - edge_embedding: (num_edges, edge_embedding_dim) - invariant edge features
-                - edge_index: (2, num_edges) - edge connectivity
-                - edge_messages: (num_edges, (lmax+1)^2, sphere_channels) - *optional* per-edge messages
-                - node_embedding: (num_atoms, (lmax+1)^2, sphere_channels) - node embeddings
+            emb: Dictionary with node_embedding (SO3_Embedding), edge_index, edge_embedding
 
         Returns:
             Dictionary with "pred" key containing (num_edges,) scalar predictions
         """
         edge_index = emb["edge_index"]
-        edge_embedding = emb["edge_embedding"]  # (num_edges, edge_embedding_dim)
+        node_embedding = emb["node_embedding"]
+        edge_embedding = emb["edge_embedding"]
 
-        # Try to use pre-computed edge messages if available, otherwise construct from nodes
-        if "edge_messages" in emb and emb["edge_messages"] is not None:
-            # Use messages captured before aggregation (more faithful to Equiformer)
-            edge_messages = emb["edge_messages"]  # (num_edges, (lmax+1)^2, sphere_channels)
+        num_edges = edge_index.shape[1]
+
+        # ============ Construct edge messages (concatenate source + target node embeddings) ============
+        # Get node embeddings at edge endpoints
+        x_source = node_embedding.embedding[edge_index[0]]  # [E, (L+1)^2, C]
+        x_target = node_embedding.embedding[edge_index[1]]  # [E, (L+1)^2, C]
+
+        # Concatenate source and target messages (exact: torch.cat on embedding dimension)
+        x_message_data = torch.cat((x_source, x_target), dim=2)  # [E, (L+1)^2, 2*C]
+
+        # Create SO3_Embedding for messages with doubled channel count
+        from fairchem.core.models.uma.nn.embedding_dev import SO3_Embedding
+        x_message = SO3_Embedding(
+            0,
+            node_embedding.lmax_list.copy(),
+            node_embedding.num_channels * 2,
+            device=node_embedding.device,
+            dtype=node_embedding.dtype
+        )
+        x_message.embedding = x_message_data
+        x_message.lmax_list = self.lmax_list.copy()
+        x_message.mmax_list = self.mmax_list.copy()
+
+        # Rotate messages to align with edge (exact from Equiformer)
+        if self.SO3_rotation is not None:
+            x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
+
+        # ============ First SO(2)-convolution ============
+        x_message, x_0_extra = self.so2_conv_1(x_message, edge_embedding)
+
+        # ============ Activation (Exact from Equiformer) ============
+        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_gate_act:
+            x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels)
+            x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+            x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
         else:
-            # Fallback: construct from node endpoints (less expressive but always available)
-            node_emb = emb["node_embedding"]  # (num_atoms, (lmax+1)^2, sphere_channels)
-            src_emb = node_emb[edge_index[0]]
-            tgt_emb = node_emb[edge_index[1]]
-            edge_messages = src_emb + tgt_emb
+            if self.use_sep_s2_act:
+                x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels)
+                x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+                x_message.embedding = self.s2_act(x_0_gating, x_message.embedding, self.SO3_grid)
+            else:
+                x_0_alpha = x_0_extra
+                x_message.embedding = self.s2_act(x_message.embedding, self.SO3_grid)
 
-        num_edges = edge_messages.shape[0]
+        # ============ Second SO(2)-convolution ============
+        x_message = self.so2_conv_2(x_message, edge_embedding)
 
-        # ============ Compute Attention Weights (Equiformer-style) ============
-        # Project edge embeddings to alpha vectors (per-edge attention computation)
-        alpha_features = self.edge_to_alpha(edge_embedding)  # (num_edges, num_heads * attn_alpha_channels)
-        alpha_features = alpha_features.view(num_edges, self.num_heads, self.attn_alpha_channels)
+        # ============ Attention Weights (Exact from Equiformer) ============
+        x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
+        x_0_alpha = self.alpha_norm(x_0_alpha)
+        x_0_alpha = self.alpha_act(x_0_alpha)
+        alpha = torch.einsum('bik,ik->bi', x_0_alpha, self.alpha_dot)
 
-        # Normalize and activate
-        alpha_features = self.alpha_norm(alpha_features)  # LayerNorm over attn_alpha_channels dimension
-        alpha_features = self.alpha_activation(alpha_features)  # SiLU activation
-
-        # Compute attention scores via learnable projection (dot product with alpha_dot)
-        # alpha shape: (num_edges, num_heads)
-        alpha = torch.einsum('bik,ik->bi', alpha_features, self.alpha_dot)
-
-        # Softmax normalization per target node (Equiformer applies softmax per target)
-        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])  # Softmax per target node
-
-        # Reshape for broadcasting:  (num_edges, 1, num_heads, 1)
+        # Softmax per target node (exact from Equiformer)
+        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
         alpha = alpha.view(num_edges, 1, self.num_heads, 1)
 
-        # Apply dropout
         if self.alpha_dropout is not None:
             alpha = self.alpha_dropout(alpha)
 
-        # ============ Weight Messages by Attention ============
-        # Reshape edge_messages to separate heads
-        # From: (num_edges, (lmax+1)^2, sphere_channels)
-        # To: (num_edges, (lmax+1)^2, num_heads, value_channels_per_head)
-        messages_reshaped = edge_messages.view(
-            num_edges,
-            edge_messages.shape[1],
-            self.num_heads,
-            self.attn_value_channels
-        )
+        # ============ Apply Attention to Messages (Exact from Equiformer) ============
+        attn = x_message.embedding  # [E, (L+1)^2, num_heads * attn_value_channels]
+        attn = attn.view(num_edges, attn.shape[1], self.num_heads, self.attn_value_channels)
+        attn = attn * alpha
+        attn = attn.view(num_edges, attn.shape[1], self.num_heads * self.attn_value_channels)
+        x_message.embedding = attn
 
-        # Weight by attention (element-wise multiplication)
-        messages_weighted = messages_reshaped * alpha  # Broadcasting: alpha has shape (num_edges, 1, num_heads, 1)
+        # Rotate back (exact from Equiformer)
+        if self.SO3_rotation is not None:
+            x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
-        # Reshape back to (num_edges, (lmax+1)^2, sphere_channels)
-        messages_weighted = messages_weighted.view(
-            num_edges,
-            edge_messages.shape[1],
-            self.sphere_channels
-        )
+        # ============ Extract scalar predictions ============
+        # Extract L=0 component (invariant scalar)
+        embedding_l0 = x_message.embedding[:, 0, :]  # [E, num_heads * attn_value_channels]
 
-        # ============ Equivariant Projection ============
-        # Apply SO3_Linear projections (preserve spherical harmonic structure)
-        x = messages_weighted  # (num_edges, (lmax+1)^2, sphere_channels)
+        # Average over heads and project to scalar
+        embedding_l0 = embedding_l0.view(num_edges, self.num_heads, self.attn_value_channels)
+        embedding_l0 = embedding_l0.mean(dim=1)  # Average over heads [E, attn_value_channels]
 
-        # Apply first SO3_Linear via einsum pattern (matches SO3_Linear forward)
-        # Einsum pattern: 'bmi,moi->bmo' preserves the spherical harmonics dimension 'm'
-        # b=batch (num_edges), m=(lmax+1)^2, i/o=feature dimensions
-        weight1 = torch.index_select(
-            self.proj_edge_1.weight, dim=0,
-            index=self.proj_edge_1.expand_index
-        )  # [(lmax+1)^2, sphere_channels//2, sphere_channels]
-
-        x_proj1 = torch.einsum('bmi,moi->bmo', x, weight1)  # (num_edges, (lmax+1)^2, sphere_channels//2)
-        x_proj1 = x_proj1 + self.proj_edge_1.bias.unsqueeze(0).unsqueeze(0)  # bias: (sphere_channels//2,)
-
-        # Second projection
-        weight2 = torch.index_select(
-            self.proj_edge_2.weight, dim=0,
-            index=self.proj_edge_2.expand_index
-        )
-        x_proj2 = torch.einsum('bmi,moi->bmo', x_proj1, weight2)  # (num_edges, (lmax+1)^2, sphere_channels//4)
-        x_proj2 = x_proj2 + self.proj_edge_2.bias.unsqueeze(0).unsqueeze(0)  # bias: (sphere_channels//4,)
-
-        # Extract L=0 component (index 0 in spherical harmonics dimension)
-        x_l0 = x_proj2[:, 0, :]  # (num_edges, sphere_channels//4)
-
-        # Final scalar projection
-        pred = self.linear_edge(x_l0).squeeze(-1)  # (num_edges,)
+        pred = self.linear_edge(embedding_l0).squeeze(-1)  # [E]
 
         return {"pred": pred}
+
+
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
