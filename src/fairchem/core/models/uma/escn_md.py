@@ -852,15 +852,6 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
             nn.Linear(self.hidden_channels, self.hidden_channels),
         )
         
-        # Residual Block 2
-        self.res2 = nn.Sequential(
-            nn.LayerNorm(self.hidden_channels),
-            nn.Linear(self.hidden_channels, self.hidden_channels),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.hidden_channels, self.hidden_channels),
-        )
-
         # Final output
         self.final = nn.Sequential(
             nn.LayerNorm(self.hidden_channels),
@@ -872,22 +863,15 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         node_emb = emb["node_embedding"]
         
         # 1. Extract L=0 (Scalar) -> (N, C)
-        # narrow(dim, start, length)
         scalars = node_emb.narrow(1, 0, 1).squeeze(1)
         
         features = [scalars]
         
         # 2. Extract Norms of L>0 -> (N, C)
-        # L=1 is at indices 1..3 (length 3)
-        # L=2 is at indices 4..8 (length 5)
-        # ...
         current_idx = 1
         for l in range(1, self.lmax + 1):
             length = 2 * l + 1
-            # Extract vector/tensor part
             vec = node_emb.narrow(1, current_idx, length) # (N, 2l+1, C)
-            # Compute norm over the component dimension (dim 1)
-            # norm shape: (N, C)
             vec_norm = vec.norm(dim=1) 
             features.append(vec_norm)
             current_idx += length
@@ -898,10 +882,12 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         # 4. MLP with Residuals
         x = self.proj(x)
         x = x + self.res1(x)
-        x = x + self.res2(x)
-        e = self.final(x).squeeze(-1)
+        pred = self.final(x).squeeze(-1)
 
-        return {"pred": e}
+        if gp_utils.initialized():
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+
+        return {"pred": pred}
 
 
 class IQA_Edge_Head(nn.Module, HeadInterface):
@@ -967,33 +953,72 @@ class IQA_Edge_Head(nn.Module, HeadInterface):
         return {"pred": e}
 
 class IQA_Node_Head2(nn.Module, HeadInterface):
-    def __init__(self, backbone: eSCNMDBackbone) -> None:
+    """
+    Advanced per-atom head: predict per-atom properties using L=0 features 
+    AND norms of L>0 features. Includes Dropout, LayerNorm, and Residual connections.
+    """
+    def __init__(self, backbone: eSCNMDBackbone, dropout: float = 0.1) -> None:
         super().__init__()
-        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        
+        # We will concatenate L=0 features with the norms of L=1..Lmax features.
+        # Input dim = C * (Lmax + 1)
+        input_dim = self.sphere_channels * (self.lmax + 1)
+        
+        # Projection from combined features to hidden dim
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout)
+        )
 
-    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
-        #print("node emb", emb["node_embedding"].shape)
-        forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
-        forces = forces.narrow(1, 0, 1)
-        forces = forces.squeeze().contiguous()
+        # Residual Block 1
+        self.res1 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+        
+        # Final output
+        self.final = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, 1)
+        )
+
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # emb["node_embedding"]: (N, (Lmax+1)^2, C)
+        node_emb = emb["node_embedding"]
+        
+        # 1. Extract L=0 (Scalar) -> (N, C)
+        scalars = node_emb.narrow(1, 0, 1).squeeze(1)
+        
+        features = [scalars]
+        
+        # 2. Extract Norms of L>0 -> (N, C)
+        current_idx = 1
+        for l in range(1, self.lmax + 1):
+            length = 2 * l + 1
+            vec = node_emb.narrow(1, current_idx, length) # (N, 2l+1, C)
+            vec_norm = vec.norm(dim=1) 
+            features.append(vec_norm)
+            current_idx += length
+            
+        # 3. Concatenate all invariants
+        x = torch.cat(features, dim=-1) # (N, C * (Lmax+1))
+        
+        # 4. MLP with Residuals
+        x = self.proj(x)
+        x = x + self.res1(x)
+        pred = self.final(x).squeeze(-1)
+
         if gp_utils.initialized():
-            forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
-        return {"pred": forces}
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
 
-# class IQA_Edge_Head2(nn.Module, HeadInterface):
-#     def __init__(self, backbone: eSCNMDBackbone) -> None:
-#         super().__init__()
-#         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
-
-#     def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
-#         print("Edge emb", emb["node_embedding"].shape)
-#         forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
-#         forces = forces.narrow(1, 0, 1)
-#         print("Forces shape before reshape:", forces.shape)
-#         forces = forces.squeeze().contiguous()
-#         if gp_utils.initialized():
-#             forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
-#         return {"pred": forces}
+        return {"pred": pred}
 
 class IQA_Edge_Head2(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
@@ -1008,7 +1033,6 @@ class IQA_Edge_Head2(nn.Module, HeadInterface):
                            "Set backbone output_edge_features=True")
         
         edge_emb = emb["edge_embedding"]  # (num_edges, edge_input_dim)
-        #print("Edge emb shape:", edge_emb.shape)
         
         # Simple linear projection to scalar
         pred = self.linear(edge_emb).squeeze(-1)  # (num_edges,)
@@ -1026,7 +1050,7 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
 
         # Calculate edge embedding dimension: distance_basis + source_embedding + target_embedding
         num_distance_basis = backbone.num_distance_basis
-        edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
+        self.edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
 
         # SO3_Linear: Process aggregated node features equivariantly
         self.so3_layer = SO3_Linear(
@@ -1074,19 +1098,17 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
 
 class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
     """
-    Exact implementation of SO2EquivariantGraphAttentionNodeEdgePrediction adapted for edge predictions.
-
-    Uses SO(2)-equivariant convolutions with attention-weighted message passing for edge properties.
-    Follows the exact algorithm from Equiformer with learnable attention weights.
+    Implementation of SO2EquivariantGraphAttention for edge predictions.
+    Uses SO(2)-equivariant convolutions with attention-weighted message passing.
     """
 
     def __init__(
         self,
         backbone,
-        num_heads: int = 4,
+        num_heads: int = 8,
         use_gate_act: bool = True,
         use_sep_s2_act: bool = True,
-        alpha_drop: float = 0.0,
+        alpha_drop: float = 0.1,
     ):
         super().__init__()
 
@@ -1098,45 +1120,36 @@ class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
         self.use_gate_act = use_gate_act
         self.use_sep_s2_act = use_sep_s2_act
 
-        # Attention channel dimensions
-        self.attn_alpha_channels = self.sphere_channels // num_heads
-        self.attn_value_channels = self.sphere_channels // num_heads
+        self.attn_alpha_channels = self.hidden_channels // num_heads
+        self.attn_value_channels = self.hidden_channels // num_heads
 
-        # Create lmax_list and mmax_list for SO2_Convolution
         self.lmax_list = [self.lmax]
         self.mmax_list = [self.mmax]
 
-        # Get rotation and mapping utilities from backbone
-        self.SO3_rotation = backbone.SO3_rotation if hasattr(backbone, 'SO3_rotation') else None
-        self.mappingReduced = backbone.mappingReduced if hasattr(backbone, 'mappingReduced') else None
-        self.SO3_grid = backbone.SO3_grid if hasattr(backbone, 'SO3_grid') else None
+        self.mappingReduced = backbone.mappingReduced
+        self.SO3_grid = backbone.SO3_grid
 
         num_distance_basis = backbone.num_distance_basis
         self.edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
 
-        # ============ Attention Mechanism (Exact from Equiformer) ============
+        # Attention Mechanism
         self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
-        self.alpha_act = nn.SiLU()  # SmoothLeakyReLU in original, but SiLU for compatibility
+        self.alpha_act = nn.SiLU()
         self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
         std = 1.0 / math.sqrt(self.attn_alpha_channels)
         torch.nn.init.uniform_(self.alpha_dot, -std, std)
 
-        self.alpha_dropout = None
-        if alpha_drop != 0.0:
-            self.alpha_dropout = torch.nn.Dropout(alpha_drop)
+        self.alpha_dropout = torch.nn.Dropout(alpha_drop) if alpha_drop > 0.0 else None
 
-        # ============ SO(2) Convolution Blocks (Exact from Equiformer) ============
-        # Extra m0 output for attention weights
+        # SO(2) Convolution Blocks
         extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
         if self.use_gate_act:
-            extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
-        else:
-            if self.use_sep_s2_act:
-                extra_m0_output_channels = extra_m0_output_channels + self.hidden_channels
+            extra_m0_output_channels += max(self.lmax_list) * self.hidden_channels
+        elif self.use_sep_s2_act:
+            extra_m0_output_channels += self.hidden_channels
 
-        # First SO(2)-convolution: 2*sphere_channels -> hidden_channels (due to concatenated messages)
         self.so2_conv_1 = SO2_Convolution(
-            2 * self.sphere_channels,  # Input: concatenated source + target node embeddings
+            self.sphere_channels,
             self.hidden_channels,
             self.lmax_list[0],
             self.mmax_list[0],
@@ -1146,27 +1159,14 @@ class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
             extra_m0_output_channels=extra_m0_output_channels
         )
 
-        # Activation layer (exact from Equiformer)
         if self.use_gate_act:
-            self.gate_act = GateActivation(
-                lmax=max(self.lmax_list),
-                mmax=max(self.mmax_list),
-                num_channels=self.hidden_channels
-            )
+            self.gate_act = GateActivation(lmax=max(self.lmax_list), mmax=max(self.mmax_list), num_channels=self.hidden_channels)
+        elif self.use_sep_s2_act:
+            self.s2_act = SeparableS2Activation(lmax=max(self.lmax_list), mmax=max(self.mmax_list))
         else:
-            if self.use_sep_s2_act:
-                self.s2_act = SeparableS2Activation(
-                    lmax=max(self.lmax_list),
-                    mmax=max(self.mmax_list)
-                )
-            else:
-                from fairchem.core.models.uma.nn.activation import S2Activation
-                self.s2_act = S2Activation(
-                    lmax=max(self.lmax_list),
-                    mmax=max(self.mmax_list)
-                )
+            from fairchem.core.models.uma.nn.activation import S2Activation
+            self.s2_act = S2Activation(lmax=max(self.lmax_list), mmax=max(self.mmax_list))
 
-        # Second SO(2)-convolution: hidden -> num_heads * attn_value_channels
         self.so2_conv_2 = SO2_Convolution(
             self.hidden_channels,
             self.num_heads * self.attn_value_channels,
@@ -1179,106 +1179,85 @@ class IQA_Edge_Head_Equiformer(nn.Module, HeadInterface):
         )
 
         # Final scalar projection
-        self.linear_edge = nn.Linear(self.attn_value_channels, 1)
+        self.proj_edges_1 = SO3_Linear(self.num_heads * self.attn_value_channels, self.num_heads * self.attn_value_channels, lmax=self.lmax_list[0])
+        self.proj_edges_2 = SO3_Linear(self.num_heads * self.attn_value_channels, 1, lmax=self.lmax_list[0])
+
+        # Final node projection
+        self.proj_nodes_1 = SO3_Linear(self.num_heads * self.attn_value_channels, self.num_heads * self.attn_value_channels, lmax=self.lmax_list[0])
+        self.proj_nodes_2 = SO3_Linear(self.num_heads * self.attn_value_channels, 1, lmax=self.lmax_list[0])
+
 
     def forward(self, data, emb):
-        """
-        Forward pass using exact SO2EquivariantGraphAttentionNodeEdgePrediction algorithm.
-
-        Args:
-            data: AtomicData object
-            emb: Dictionary with node_embedding (SO3_Embedding), edge_index, edge_embedding
-
-        Returns:
-            Dictionary with "pred" key containing (num_edges,) scalar predictions
-        """
         edge_index = emb["edge_index"]
         node_embedding = emb["node_embedding"]
         edge_embedding = emb["edge_embedding"]
+        edge_distance_vec = emb["edge_distance_vec"]
 
         num_edges = edge_index.shape[1]
+        num_nodes = node_embedding.shape[0]
 
-        # ============ Construct edge messages (concatenate source + target node embeddings) ============
-        # Get node embeddings at edge endpoints
-        x_source = node_embedding.embedding[edge_index[0]]  # [E, (L+1)^2, C]
-        x_target = node_embedding.embedding[edge_index[1]]  # [E, (L+1)^2, C]
+        # Construct edge messages by concatenating source and target node features
+        x_source = node_embedding[edge_index[0]]
+        x_target = node_embedding[edge_index[1]]
+        
+        # Correct message construction: concatenate along the spherical harmonic dimension
+        x_message_data = torch.cat((x_source, x_target), dim=1)
 
-        # Concatenate source and target messages (exact: torch.cat on embedding dimension)
-        x_message_data = torch.cat((x_source, x_target), dim=2)  # [E, (L+1)^2, 2*C]
+        # First SO(2)-convolution
+        x_message, x_0_extra = self.so2_conv_1(x_message_data, edge_embedding, edge_distance_vec)
 
-        # Create SO3_Embedding for messages with doubled channel count
-        from fairchem.core.models.uma.nn.embedding_dev import SO3_Embedding
-        x_message = SO3_Embedding(
-            0,
-            node_embedding.lmax_list.copy(),
-            node_embedding.num_channels * 2,
-            device=node_embedding.device,
-            dtype=node_embedding.dtype
-        )
-        x_message.embedding = x_message_data
-        x_message.lmax_list = self.lmax_list.copy()
-        x_message.mmax_list = self.mmax_list.copy()
-
-        # Rotate messages to align with edge (exact from Equiformer)
-        if self.SO3_rotation is not None:
-            x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
-
-        # ============ First SO(2)-convolution ============
-        x_message, x_0_extra = self.so2_conv_1(x_message, edge_embedding)
-
-        # ============ Activation (Exact from Equiformer) ============
+        # Activation
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
         if self.use_gate_act:
             x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels)
             x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-            x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
+            x_message = self.gate_act(x_0_gating, x_message)
         else:
             if self.use_sep_s2_act:
                 x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels)
                 x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-                x_message.embedding = self.s2_act(x_0_gating, x_message.embedding, self.SO3_grid)
+                x_message = self.s2_act(x_0_gating, x_message, self.SO3_grid)
             else:
                 x_0_alpha = x_0_extra
-                x_message.embedding = self.s2_act(x_message.embedding, self.SO3_grid)
+                x_message = self.s2_act(x_message, self.SO3_grid)
 
-        # ============ Second SO(2)-convolution ============
-        x_message = self.so2_conv_2(x_message, edge_embedding)
+        # Second SO(2)-convolution
+        x_message = self.so2_conv_2(x_message, edge_embedding, edge_distance_vec)
 
-        # ============ Attention Weights (Exact from Equiformer) ============
+        # Attention weights
         x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
         x_0_alpha = self.alpha_norm(x_0_alpha)
         x_0_alpha = self.alpha_act(x_0_alpha)
         alpha = torch.einsum('bik,ik->bi', x_0_alpha, self.alpha_dot)
 
-        # Softmax per target node (exact from Equiformer)
         alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
         alpha = alpha.view(num_edges, 1, self.num_heads, 1)
 
         if self.alpha_dropout is not None:
             alpha = self.alpha_dropout(alpha)
 
-        # ============ Apply Attention to Messages (Exact from Equiformer) ============
-        attn = x_message.embedding  # [E, (L+1)^2, num_heads * attn_value_channels]
+        # Apply Attention to Messages
+        attn = x_message
         attn = attn.view(num_edges, attn.shape[1], self.num_heads, self.attn_value_channels)
         attn = attn * alpha
         attn = attn.view(num_edges, attn.shape[1], self.num_heads * self.attn_value_channels)
-        x_message.embedding = attn
+        x_message = attn
 
-        # Rotate back (exact from Equiformer)
-        if self.SO3_rotation is not None:
-            x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+        # --- Edge Prediction ---
+        edge_pred_emb = self.proj_edges_1(x_message)
+        edge_pred_emb = self.proj_edges_2(edge_pred_emb)
+        edge_pred = edge_pred_emb.narrow(1, 0, 1).squeeze(1).squeeze(-1)
 
-        # ============ Extract scalar predictions ============
-        # Extract L=0 component (invariant scalar)
-        embedding_l0 = x_message.embedding[:, 0, :]  # [E, num_heads * attn_value_channels]
+        # --- Node Prediction ---
+        # Aggregate edge messages to nodes
+        x_nodes = torch_geometric.utils.scatter(x_message, edge_index[1], dim=0, dim_size=num_nodes, reduce='mean')
+        
+        # Project to get node predictions
+        node_pred_emb = self.proj_nodes_1(x_nodes)
+        node_pred_emb = self.proj_nodes_2(node_pred_emb)
+        node_pred = node_pred_emb.narrow(1, 0, 1).squeeze(1).squeeze(-1)
 
-        # Average over heads and project to scalar
-        embedding_l0 = embedding_l0.view(num_edges, self.num_heads, self.attn_value_channels)
-        embedding_l0 = embedding_l0.mean(dim=1)  # Average over heads [E, attn_value_channels]
-
-        pred = self.linear_edge(embedding_l0).squeeze(-1)  # [E]
-
-        return {"pred": pred}
+        return {"edge_pred": edge_pred, "node_pred": node_pred}
 
 
 

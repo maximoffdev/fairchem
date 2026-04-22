@@ -91,11 +91,7 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  iqa_intra_a:
-    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
-  iqa_inter_a:
-    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
-  iqa_inter_ab:
+  iqa_combined_head:
     module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
 
 runner:

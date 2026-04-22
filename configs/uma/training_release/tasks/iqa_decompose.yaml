@@ -192,7 +192,7 @@
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: iqa_intra_a
   level: atom
-  property: pred
+  property: node_pred
   datasets: ${dataset_list}
   element_references:
     _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
@@ -212,35 +212,14 @@
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_intra_a:
-      prediction_key: pred
+    iqa_combined_head:
+      prediction_key: node_pred
       label_key: iqa_intra_a
-
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_inter_a
-  level: atom
-  property: pred
-  datasets: ${dataset_list}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_inter_a_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_inter_a:
-      prediction_key: pred
-      label_key: iqa_inter_a
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
   name: iqa_inter_ab
   level: edge
-  property: pred
+  property: edge_pred
   datasets: ${dataset_list}
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
@@ -255,5 +234,5 @@
     dim: [1]
     dtype: float32
     iqa_inter_ab:
-      prediction_key: pred
-      label_key: iqa_inter_ab
+      iqa_combined_head: pred
+      label_key: edge_pred
