@@ -24,7 +24,7 @@ regress_forces: True
 regress_stress: ${regress_stress}
 direct_forces: ${direct_forces}
 
-num_layers: 6 #4 ursprünglich
+num_layers: 4 #4 ursprünglich
 hidden_channels: 128
 norm_type: rms_norm_sh
 act_type: gate
