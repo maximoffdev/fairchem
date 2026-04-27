@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_layers6_normalized
+  run_name: dipole_pretrain_MuA_K6L5
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
