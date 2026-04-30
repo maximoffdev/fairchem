@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_K10L4_2
+  run_name: dipole_pretrain_MuA_norm_K10L4
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -56,7 +56,7 @@ normalizer_rmsd: 1.0 #normally 1.0
 # iqa_inter_ab_coef: 1.0
 # --- DPM ---
 # dipole_scalar_coef: 1.0 #refers to decompose.yaml
-dipole_vector_coef: 1.0
+dipole_vector_coef: 0.353707 #1.0 ursprünglich
 # dipole_intra_coef: 1.0
 # dipole_bond_coef: 1.0
 # --- Dataset Setup ---
