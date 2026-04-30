@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_weight_decay_1e-4
+  run_name: dipole_pretrain_MuA_K16L6
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -154,7 +154,7 @@ runner:
       _target_: torch.optim.AdamW
       _partial_: true
       lr: 8e-4
-      weight_decay: 1e-4 #ursprünglich 1e-3
+      weight_decay: 1e-3 #ursprünglich 1e-3
     cosine_lr_scheduler_fn:
       _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
       _partial_: true
