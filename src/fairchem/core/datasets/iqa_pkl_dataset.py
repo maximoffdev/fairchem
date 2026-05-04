@@ -156,7 +156,8 @@ class IQAPKLDataset(BaseDataset):
 
         energy = labels.get("energy", None)
 
-        energy = Ht_to_eV(energy) if self.ht2ev else energy  # (E,)
+        if energy is not None:
+            energy = Ht_to_eV(energy) if self.ht2ev else energy  # (E,)
         
         ad = AtomicData(
             pos=pos,

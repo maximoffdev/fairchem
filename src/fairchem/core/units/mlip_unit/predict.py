@@ -55,6 +55,7 @@ def collate_predictions(predict_fn):
         if gp_utils.initialized():
             data.batch = data.batch_full
         collated_preds = defaultdict(list)
+        edge_batch = None
         for i, dataset in enumerate(data.dataset):
             for task in predict_unit.dataset_to_tasks[dataset]:
                 if task.level == "system":
@@ -64,6 +65,18 @@ def collate_predictions(predict_fn):
                 elif task.level == "atom":
                     collated_preds[task.property].append(
                         preds[task.name][data.batch == i]
+                    )
+                elif task.level == "edge":
+                    if edge_batch is None:
+                        edge_counts = data.nedges.to(data.batch.device)
+                        edge_batch = torch.repeat_interleave(
+                            torch.arange(
+                                edge_counts.shape[0], device=edge_counts.device
+                            ),
+                            edge_counts,
+                        )
+                    collated_preds[task.property].append(
+                        preds[task.name][edge_batch == i]
                     )
                 else:
                     raise RuntimeError(
