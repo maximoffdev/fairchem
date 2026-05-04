@@ -1148,6 +1148,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         node_prediction: bool = True,
         edge_task_name: str = "iqa_inter_ab",
         node_task_name: str = "iqa_intra_a",
+        extra_node_task_name: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -1173,6 +1174,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         self.node_prediction = node_prediction
         self.edge_task_name = edge_task_name
         self.node_task_name = node_task_name
+        self.extra_node_task_name = extra_node_task_name
         self.out_degree = out_degree
 
         # === EBDM-origin: Save rotation/mapping references ===
@@ -1364,6 +1366,14 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 self.output_channels_nodes,
                 lmax=self.lmax_list[0],
             )
+            if self.extra_node_task_name is not None:
+                self.proj_nodes_2_extra = SO3_Linear(
+                    proj_hidden,
+                    self.output_channels_nodes,
+                    lmax=self.lmax_list[0],
+                )
+            else:
+                self.proj_nodes_2_extra = None
 
     @staticmethod
     def _squeeze_scalar_output(x: torch.Tensor) -> torch.Tensor:
@@ -1568,7 +1578,8 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
 
         # === EBDM-origin: Node prediction (if enabled) ===
         if self.node_prediction and self.output_channels_nodes > 0:
-            out_embedding_nodes = self.proj_nodes_2(self.proj_nodes_1(x_nodes))
+            proj_nodes = self.proj_nodes_1(x_nodes)
+            out_embedding_nodes = self.proj_nodes_2(proj_nodes)
             out_embedding_nodes = out_embedding_nodes.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
             )
@@ -1577,6 +1588,17 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 node_pred = gp_utils.gather_from_model_parallel_region(node_pred, dim=0)
             # FAIRCHEM ADAPTATION: Nested dict with node_task_name key
             output[self.node_task_name] = {"node_pred": node_pred}
+            if self.proj_nodes_2_extra is not None:
+                out_embedding_nodes_extra = self.proj_nodes_2_extra(proj_nodes)
+                out_embedding_nodes_extra = out_embedding_nodes_extra.narrow(
+                    1, self.num_irreps_passed, 2 * self.out_degree + 1
+                )
+                node_pred_extra = self._squeeze_scalar_output(out_embedding_nodes_extra)
+                if gp_utils.initialized():
+                    node_pred_extra = gp_utils.gather_from_model_parallel_region(
+                        node_pred_extra, dim=0
+                    )
+                output[self.extra_node_task_name] = {"node_pred": node_pred_extra}
 
         return output
 
@@ -1584,6 +1606,133 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
 class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):
     """Backward-compatible alias for existing configs."""
 
+
+
+class IQA_Components_EFS_Head(nn.Module, HeadInterface):
+    """Predict IQA components and forces from component-summed energy."""
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        node_task_name: str = "iqa_intra_a",
+        inter_task_name: str = "iqa_inter_a",
+        edge_task_name: str = "iqa_inter_ab",
+        forces_direct_task_name: str = "iqa_forces_direct",
+        forces_grad_task_name: str = "iqa_forces_grad",
+        include_inter_a: bool = False,
+        edge_energy_mode: str = "half",
+    ) -> None:
+        super().__init__()
+        self.regress_forces = backbone.regress_forces
+        self.direct_forces = backbone.direct_forces
+        self.node_task_name = node_task_name
+        self.inter_task_name = inter_task_name
+        self.edge_task_name = edge_task_name
+        self.forces_direct_task_name = forces_direct_task_name
+        self.forces_grad_task_name = forces_grad_task_name
+        self.include_inter_a = include_inter_a
+        self.edge_energy_mode = edge_energy_mode
+
+        self.edge_head = IQA_Edge_Head_Equiformer(
+            backbone,
+            edge_prediction=True,
+            node_prediction=True,
+            edge_task_name=edge_task_name,
+            node_task_name=node_task_name,
+            extra_node_task_name=inter_task_name if include_inter_a else None,
+        )
+        self.force_head = Linear_Force_Head(backbone)
+
+        if self.edge_energy_mode not in {"half", "directed", "upper_triangle"}:
+            raise ValueError(
+                "edge_energy_mode must be one of: half, directed, upper_triangle"
+            )
+
+    @staticmethod
+    def _sum_nodes(values: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
+        energy_part = torch.zeros(
+            num_graphs, device=values.device, dtype=values.dtype
+        )
+        energy_part.index_add_(0, batch, values)
+        return energy_part
+
+    def _sum_edges(
+        self,
+        values: torch.Tensor,
+        edge_index: torch.Tensor,
+        nedges: torch.Tensor,
+    ) -> torch.Tensor:
+        edge_batch = torch.repeat_interleave(
+            torch.arange(nedges.shape[0], device=nedges.device),
+            nedges,
+        )
+
+        if self.edge_energy_mode == "upper_triangle":
+            mask = edge_index[0] < edge_index[1]
+            values = values[mask]
+            edge_batch = edge_batch[mask]
+
+        energy_part = torch.zeros(
+            nedges.shape[0], device=values.device, dtype=values.dtype
+        )
+        energy_part.index_add_(0, edge_batch, values)
+
+        if self.edge_energy_mode == "half":
+            energy_part = energy_part * 0.5
+
+        return energy_part
+
+    @conditional_grad(torch.enable_grad())
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        outputs: dict[str, torch.Tensor] = {}
+
+        inter_a_pred = None
+        edge_outputs = self.edge_head(data, emb)
+        intra_pred = edge_outputs[self.node_task_name]["node_pred"]
+        outputs[self.node_task_name] = {"node_pred": intra_pred}
+        if self.edge_task_name in edge_outputs:
+            edge_pred = edge_outputs[self.edge_task_name]["edge_pred"]
+            outputs[self.edge_task_name] = {"edge_pred": edge_pred}
+        else:
+            edge_pred = None
+
+        if self.include_inter_a and self.inter_task_name in edge_outputs:
+            inter_a_pred = edge_outputs[self.inter_task_name]["node_pred"]
+            outputs[self.inter_task_name] = {"node_pred": inter_a_pred}
+
+        if data["pos"].requires_grad is False:
+            data["pos"].requires_grad = True
+
+        energy_nodes = intra_pred
+        if inter_a_pred is not None:
+            energy_nodes = energy_nodes + inter_a_pred
+
+        energy_part = self._sum_nodes(energy_nodes, data["batch"], len(data["natoms"]))
+        if inter_a_pred is None and edge_pred is not None:
+            energy_part = energy_part + self._sum_edges(
+                edge_pred,
+                emb["edge_index"],
+                data["nedges"],
+            )
+
+        if gp_utils.initialized():
+            energy_part = gp_utils.reduce_from_model_parallel_region(energy_part)
+
+        forces_grad = -torch.autograd.grad(
+            energy_part.sum(),
+            data["pos"],
+            create_graph=self.training,
+        )[0]
+        if gp_utils.initialized():
+            forces_grad = gp_utils.reduce_from_model_parallel_region(forces_grad)
+
+        forces_direct = self.force_head(data, emb)["forces"]
+        outputs[self.forces_direct_task_name] = {"forces": forces_direct}
+        outputs[self.forces_grad_task_name] = {"forces": forces_grad}
+
+        return outputs
 
 
 class Linear_Force_Head(nn.Module, HeadInterface):

@@ -776,6 +776,9 @@ class MLIPTrainEvalUnit(
                 "train/num_samples_on_rank": num_samples_local,
             }
 
+            for task_name, task_loss in loss_dict.items():
+                log_dict[f"train/loss/{task_name}"] = task_loss.item()
+
             if self.logger:
                 self.logger.log(log_dict, step=step, commit=True)
 
@@ -923,6 +926,7 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
 
         # dictionary of metrics for each dataset, split, task, and metric
         self.running_metrics: dict[str, dict[str, dict[str, Metrics]]] = {}
+        self.running_loss_metrics: dict[str, Metrics] = {}
         self.total_loss_metrics: Metrics = Metrics()
         self.total_atoms: int = 0
         self.total_runtime: float = 0
@@ -965,6 +969,7 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             }
             for task in self.tasks
         }
+        self.running_loss_metrics = {task.name: Metrics() for task in self.tasks}
         self.total_loss_metrics = Metrics()
         self.total_atoms = 0
         self.total_runtime = 0
@@ -1002,6 +1007,12 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
         loss_dict = compute_loss(self.tasks, preds, data)
         total_loss = sum(loss_dict.values())
         self.total_loss_metrics += Metrics(metric=total_loss, total=total_loss, numel=1)
+
+        for task in self.tasks:
+            loss_value = loss_dict[task.name].item()
+            self.running_loss_metrics[task.name] += Metrics(
+                metric=loss_value, total=loss_value, numel=1
+            )
 
         # get the datasets with split names
         datasets_in_batch = set(data.dataset_name)
@@ -1050,6 +1061,11 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
                         metrics.numel, average=False, device=device
                     )
                     log_dict[f"val/{dataset},{task},{metric_name}"] = total / numel
+
+        for task, metrics in self.running_loss_metrics.items():
+            total = distutils.all_reduce(metrics.total, average=False, device=device)
+            numel = distutils.all_reduce(metrics.numel, average=False, device=device)
+            log_dict[f"val/loss/{task}"] = total / numel
 
         total_runtime = distutils.all_reduce(
             self.total_runtime, average=False, device=device
