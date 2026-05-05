@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole_pretrain_MuA_GateHead
+  run_name: dipole_pretrain_MuA_DeepHead
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -124,10 +124,10 @@ heads:
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Scalar_Head
   # dipole_vector:           #vectorial DPM Head
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
-  dipole_vector_gated:           #vectorial DPM Head
-    module: fairchem.core.models.uma.escn_md.MLP_Gated_Dipole_Vector_Head
-  # dipole_vector_deep:           #vectorial DPM Head
-  #   module: fairchem.core.models.uma.escn_md.MLP_Deep_Dipole_Vector_Head
+  # dipole_vector_gated:           #vectorial DPM Head
+  #   module: fairchem.core.models.uma.escn_md.MLP_Gated_Dipole_Vector_Head
+  dipole_vector_deep:           #vectorial DPM Head
+    module: fairchem.core.models.uma.escn_md.MLP_Deep_Dipole_Vector_Head
   # dipole_intra:           #vectorial, internal DPM Head
   #   module: fairchem.core.models.uma.escn_md.MLP_Dipole_Vector_Head
   # dipole_intra:           

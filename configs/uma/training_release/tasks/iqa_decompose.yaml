@@ -371,8 +371,32 @@
 #     mean: 0.0
 #     rmsd: ${normalizer_rmsd}
 
+# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+#   name: dipole_vector_gated
+#   level: atom
+#   property: pred
+#   datasets: ${dataset_list}
+#   # train_on_free_atoms: True
+#   # eval_on_free_atoms: True
+#   loss_fn:
+#     _target_: fairchem.core.modules.loss.DDPMTLoss
+#     loss_fn:
+#       _target_: fairchem.core.modules.loss.L2NormLoss
+#     #reduction: per_structure
+#     coefficient: ${dipole_vector_coef}
+#   out_spec:
+#     dim: [3]
+#     dtype: float32
+#     dipole_intra:
+#         prediction_key: pred
+#         label_key: dipole_vector_gated
+#   normalizer:
+#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+#     mean: 0.0
+#     rmsd: ${normalizer_rmsd}
+
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_vector_gated
+  name: dipole_vector_deep
   level: atom
   property: pred
   datasets: ${dataset_list}
@@ -389,7 +413,7 @@
     dtype: float32
     dipole_intra:
         prediction_key: pred
-        label_key: dipole_vector_gated
+        label_key: dipole_vector_deep
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
