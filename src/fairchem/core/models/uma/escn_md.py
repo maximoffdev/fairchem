@@ -1179,3 +1179,85 @@ class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
             
         return {"pred": vector}
 
+# using a scalar gate that learn from chemical environment to modulate the vector features
+class MLP_Gated_Dipole_Vector_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        # MLP for learning from chemical environment
+        hidden_dim = self.sphere_channels * 2
+        
+        self.scalar_gate_mlp = nn.Sequential(
+            nn.Linear(self.sphere_channels, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, self.sphere_channels),
+            nn.Sigmoid()
+        )
+        #
+        self.vector_linear = nn.Linear(self.sphere_channels, self.sphere_channels, bias=False)
+        self.final_projection = nn.Linear(self.sphere_channels, 1, bias = False)
+    
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        node_features = emb["node_embedding"]
+
+        scalars = node_features.narrow(1, 0, 1).squeeze(1)
+        vectors = node_features.narrow(1, 1, 3)
+
+        # using scalar features to create a gate for vectore features --> MLP
+        gate = self.scalar_gate_mlp(scalars)
+        vectors = self.vector_linear(vectors)
+        
+        # apply gate to vector features
+        gated_vectors = vectors * gate.unsqueeze(1)
+
+        # final prediction
+        out_pred = self.final_projection(gated_vectors)
+        vector = out_pred.squeeze(-1).contiguous()
+
+        if gp_utils.initialized():
+            vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
+    
+        return {"pred": vector}
+    
+# using deeper vectorial layers to predict dipole vector directly from vector features
+class MLP_Deep_Dipole_Vector_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        
+        self.v_lin1 = nn.Linear(self.sphere_channels, self.sphere_channels * 2, bias = False)
+        
+        self.vector_mlp = nn.Sequential(
+            nn.Linear(self.sphere_channels, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(self.sphere_channels * 2, self.sphere_channels * 2),
+            nn.Sigmoid()
+        )
+
+        self.v_lin2 = nn.Linear(self.sphere_channels * 2, self.sphere_channels, bias=False)
+
+        self.v_final_projection = nn.Linear(self.sphere_channels, 1, bias=False)
+    
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        node_features = emb["node_embedding"]
+
+        scalars = node_features.narrow(1, 0, 1).squeeze(1)
+        vectors = node_features.narrow(1, 1, 3)
+
+        # deep vector path
+        v = self.v_lin1(vectors)
+        gate = self.vector_mlp(scalars)
+
+        # activation in hidden space
+        v = v * gate.unsqueeze(1)
+        v = self.v_lin2(v)
+
+        out = self.v_final_projection(v)
+        vector = out.squeeze(-1).contiguous()
+
+        
+        if gp_utils.initialized():
+            vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
+    
+        return {"pred": vector}
