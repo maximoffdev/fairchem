@@ -16,5 +16,5 @@ partition: clara
 max_atoms: 360       #360 ursprünglich
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 32
-cutoff_radius: 12.0   # Å; matched to K10L4 backbone default, #7.0 default
+cutoff_radius: 7.0   # Å; matched to K10L4 backbone default, #7.0 default
 setup_commands: []

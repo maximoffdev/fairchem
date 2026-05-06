@@ -1191,6 +1191,7 @@ class MLP_Gated_Dipole_Vector_Head(nn.Module, HeadInterface):
             nn.Linear(self.sphere_channels, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
             nn.Linear(hidden_dim, self.sphere_channels),
             nn.Sigmoid()
         )
@@ -1225,13 +1226,14 @@ class MLP_Deep_Dipole_Vector_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
         super().__init__()
         self.sphere_channels = backbone.sphere_channels
+        hidden_dim = self.sphere_channels * 2
         
-        self.v_lin1 = nn.Linear(self.sphere_channels, self.sphere_channels * 2, bias = False)
+        self.v_lin1 = nn.Linear(self.sphere_channels, hidden_dim, bias = False)
         
         self.vector_mlp = nn.Sequential(
             nn.Linear(self.sphere_channels, hidden_dim),
             nn.SiLU(),
-            nn.Linear(self.sphere_channels * 2, self.sphere_channels * 2),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.Sigmoid()
         )
 
@@ -1257,6 +1259,44 @@ class MLP_Deep_Dipole_Vector_Head(nn.Module, HeadInterface):
         vector = out.squeeze(-1).contiguous()
 
         
+        if gp_utils.initialized():
+            vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
+    
+        return {"pred": vector}
+    
+class MLP_Attention_Dipole_Vector_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+
+        #mlp for attention weights
+        self.attention_network = nn.Sequential(
+            nn.Linear(self.sphere_channels, self.sphere_channels),
+            nn.SiLU(),
+            nn.Linear(self.sphere_channels, self.sphere_channels),
+            nn.Softmax(dim=1)
+        )
+
+        self.vector_transform = nn.Linear(self.sphere_channels, self.sphere_channels, bias=False)
+        self.final_projection = nn.Linear(self.sphere_channels, 1, bias=False)
+
+    def forward(self, data, emb:dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        node_features = emb["node_embedding"]
+
+        scalars = node_features.narrow(1, 0, 1).squeeze(1)
+        vectors = node_features.narrow(1, 1, 3)
+
+        # compute attention weights from scalar features
+        weights = self.attention_network(scalars)
+
+        v_transformed = self.vector_transform(vectors)
+
+        # apply attention to vector features
+        v_weighted = v_transformed * weights.unsqueeze(1)
+
+        vector = self.final_projection(v_weighted).squeeze(-1).contiguous()
+        
+
         if gp_utils.initialized():
             vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
     
