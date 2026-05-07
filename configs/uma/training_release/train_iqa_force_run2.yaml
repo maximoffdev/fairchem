@@ -46,8 +46,8 @@ normalizer_mean_iqa_inter_a: -1.058941e+01
 normalizer_rmsd_iqa_inter_a: 8.997506e+00
 normalizer_mean_iqa_inter_ab: -6.901365e-01
 normalizer_rmsd_iqa_inter_ab: 2.689259e+00
-normalizer_mean_iqa_force: -4.904489e-02
-normalizer_rmsd_iqa_force: 2.412303e+00
+normalizer_mean_iqa_force: 0.0
+normalizer_rmsd_iqa_force: 1.0
 iqa_intra_a_coef: 1.0
 iqa_inter_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
@@ -101,9 +101,9 @@ heads:
     forces_grad_task_name: iqa_forces_grad
     include_inter_a: true
     edge_energy_mode: ${edge_energy_mode}
-    intra_rmsd: ${iqa_intra_a_rmsd}
-    inter_a_rmsd: ${iqa_inter_a_rmsd}
-    inter_ab_rmsd: ${iqa_inter_ab_rmsd}
+    intra_rmsd: ${normalizer_rmsd_iqa_intra_a}
+    inter_a_rmsd: ${normalizer_rmsd_iqa_inter_a}
+    inter_ab_rmsd: ${normalizer_rmsd_iqa_inter_ab}
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
