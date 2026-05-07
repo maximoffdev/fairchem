@@ -9,6 +9,11 @@ import numpy as np
 import torch
 from ase.calculators.calculator import Calculator
 
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - tqdm is optional
+    tqdm = None
+
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.datasets.iqa_pkl_dataset import IQAPKLDataset
 from fairchem.core.datasets.atomic_data import AtomicData
@@ -115,7 +120,11 @@ def predict_iqa_pkl(
         "structures": [],
     }
 
-    for idx in indices:
+    iterator = indices
+    if tqdm is not None:
+        iterator = tqdm(indices, desc="Predicting", unit="mol")
+
+    for idx in iterator:
         data = dataset[idx]
         batch = data_list_collater([data])
         pred = predict_unit.predict(batch)

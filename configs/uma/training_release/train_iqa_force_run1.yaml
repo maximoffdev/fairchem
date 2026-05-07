@@ -40,7 +40,12 @@ cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
 direct_forces: False
 
-normalizer_rmsd: 1.423
+normalizer_mean_iqa_intra_a: -1.002383e+03
+normalizer_rmsd_iqa_intra_a: 2.068278e+03
+normalizer_mean_iqa_inter_ab: -6.901365e-01
+normalizer_rmsd_iqa_inter_ab: 2.689259e+00
+normalizer_mean_iqa_force: -4.904489e-02
+normalizer_rmsd_iqa_force: 2.412303e+00
 iqa_intra_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
 

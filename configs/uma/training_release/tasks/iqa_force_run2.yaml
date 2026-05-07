@@ -16,8 +16,8 @@
     coefficient: ${iqa_intra_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_intra_a}
+    rmsd: ${normalizer_rmsd_iqa_intra_a}
   out_spec:
     dim: [1]
     dtype: float32
@@ -37,8 +37,8 @@
     coefficient: ${iqa_inter_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_inter_a}
+    rmsd: ${normalizer_rmsd_iqa_inter_a}
   out_spec:
     dim: [1]
     dtype: float32
@@ -58,8 +58,8 @@
     coefficient: ${iqa_inter_ab_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
   out_spec:
     dim: [1]
     dtype: float32
@@ -81,8 +81,8 @@
     coefficient: ${force_direct_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_force}
+    rmsd: ${normalizer_rmsd_iqa_force}
   out_spec:
     dim: [3]
     dtype: float32
@@ -103,8 +103,8 @@
     coefficient: ${force_grad_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_force}
+    rmsd: ${normalizer_rmsd_iqa_force}
   out_spec:
     dim: [3]
     dtype: float32

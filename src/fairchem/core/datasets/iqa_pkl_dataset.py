@@ -26,6 +26,9 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
     return x * 27.211386245988
 
+def Ht_per_A_to_eV_per_Bohr(x: torch.Tensor) -> torch.Tensor:
+    return x * 27.211386245988 / 1.8897261245650618
+
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
         return sample
@@ -83,6 +86,7 @@ class IQAPKLDataset(BaseDataset):
         allow_missing_labels: bool = False,
         bohr2ang: bool = True,
         ht2ev: bool = True,
+        force_ht2ev: bool = True,
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -90,6 +94,7 @@ class IQAPKLDataset(BaseDataset):
         self.allow_missing_labels = allow_missing_labels
         self.bohr2ang = bohr2ang
         self.ht2ev = ht2ev
+        self.force_ht2ev = force_ht2ev
         self.name = name
         self.dataset_name = name
         self.dataset_names = [name]
@@ -187,7 +192,10 @@ class IQAPKLDataset(BaseDataset):
                 continue # Already handled
 
             # Apply unit conversion if requested
-            converted_val = Ht_to_eV(val) if self.ht2ev else val
+            if out_key in {"iqa_forces_direct", "iqa_forces_grad"}:
+                converted_val = Ht_per_A_to_eV_per_Bohr(val) if self.force_ht2ev else val
+            else:
+                converted_val = Ht_to_eV(val) if self.ht2ev else val
 
             setattr(ad, out_key, converted_val)
 

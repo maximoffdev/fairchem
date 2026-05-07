@@ -207,8 +207,8 @@
     coefficient: ${iqa_intra_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_intra_a}
+    rmsd: ${normalizer_rmsd_iqa_intra_a}
   out_spec:
     dim: [1]
     dtype: float32
@@ -228,8 +228,8 @@
     coefficient: ${iqa_inter_ab_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
   out_spec:
     dim: [1]
     dtype: float32
