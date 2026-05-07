@@ -101,6 +101,9 @@ heads:
     forces_grad_task_name: iqa_forces_grad
     include_inter_a: true
     edge_energy_mode: ${edge_energy_mode}
+    intra_rmsd: ${iqa_intra_a_rmsd}
+    inter_a_rmsd: ${iqa_inter_a_rmsd}
+    inter_ab_rmsd: ${iqa_inter_ab_rmsd}
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner

@@ -1621,6 +1621,9 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         forces_grad_task_name: str = "iqa_forces_grad",
         include_inter_a: bool = False,
         edge_energy_mode: str = "half",
+        intra_rmsd: float = 1.0,
+        inter_a_rmsd: float = 1.0,
+        inter_ab_rmsd: float = 1.0,
     ) -> None:
         super().__init__()
         self.regress_forces = backbone.regress_forces
@@ -1632,6 +1635,9 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         self.forces_grad_task_name = forces_grad_task_name
         self.include_inter_a = include_inter_a
         self.edge_energy_mode = edge_energy_mode
+        self.intra_rmsd = intra_rmsd
+        self.inter_a_rmsd = inter_a_rmsd
+        self.inter_ab_rmsd = inter_ab_rmsd
 
         self.edge_head = IQA_Edge_Head_Equiformer(
             backbone,
@@ -1705,14 +1711,14 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         if data["pos"].requires_grad is False:
             data["pos"].requires_grad = True
 
-        energy_nodes = intra_pred
+        energy_nodes = intra_pred * self.intra_rmsd
         if inter_a_pred is not None:
-            energy_nodes = energy_nodes + inter_a_pred
+            energy_nodes = energy_nodes + inter_a_pred * self.inter_a_rmsd
 
         energy_part = self._sum_nodes(energy_nodes, data["batch"], len(data["natoms"]))
         if inter_a_pred is None and edge_pred is not None:
             energy_part = energy_part + self._sum_edges(
-                edge_pred,
+                edge_pred * self.inter_ab_rmsd,
                 emb["edge_index"],
                 data["nedges"],
             )
