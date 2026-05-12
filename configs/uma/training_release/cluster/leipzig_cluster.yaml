@@ -1,6 +1,6 @@
 # Use shared storage for multi-node stability.
-data_root_dir: /work2/hg76zate-BA/HCNOSPClF_combined_datasets_filtered0.001
-run_dir: /work2/hg76zate-BA/fairchem_runs
+data_root_dir: /work2/hg76zate-BA-recovery/hg76zate-BA-1778289602/HCNOSPClF_combined_datasets_filtered0.001
+run_dir: /work2/hg76zate-BA-recovery/hg76zate-BA-1778289602/fairchem_runs/
 #run_dir: ${oc.env:PWD}/runs
 account: null
 qos: null

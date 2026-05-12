@@ -6,7 +6,7 @@ use_composition_embedding: true
 use_global_embedding: false
 
 max_num_elements: 100
-sphere_channels: 256 #128 ursprünlich
+sphere_channels: 128 #128 ursprünlich
 lmax: 2
 mmax: 2
 
