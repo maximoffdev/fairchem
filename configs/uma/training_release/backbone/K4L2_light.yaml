@@ -1,0 +1,37 @@
+model: fairchem.core.models.uma.escn_moe.eSCNMDMoeBackbone
+moe_dropout: 0.05
+moe_layer_type: ${moe_layer_type}
+num_experts: ${num_moe_experts}
+use_composition_embedding: true
+use_global_embedding: false
+
+max_num_elements: 100
+sphere_channels: 96
+lmax: 2
+mmax: 2
+
+otf_graph: ${otf_graph}
+max_neighbors: ${max_neighbors}
+use_pbc: True
+use_pbc_single: True
+
+cutoff: ${cutoff_radius}
+edge_channels: 96
+distance_function: gaussian
+num_distance_basis: 32
+
+regress_forces: True
+regress_stress: ${regress_stress}
+direct_forces: ${direct_forces}
+
+num_layers: 3
+hidden_channels: 96
+norm_type: rms_norm_sh
+act_type: gate
+ff_type: spectral
+
+chg_spin_emb_type: "rand_emb"
+cs_emb_grad: True
+dataset_list: ${dataset_list}
+output_edge_features: True  # Required for edge-level IQA predictions
+#activation_checkpointing: True  # Save 50-70% memory by recomputing activations during backward pass
