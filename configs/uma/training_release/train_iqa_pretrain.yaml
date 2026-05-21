@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: iqa_pretrain_3term
+  run_name: le-equi-1-1-no-norm-m
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -50,10 +50,10 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_intra_a: -1.002383e+03
-normalizer_rmsd_iqa_intra_a: 2.068278e+03
-normalizer_mean_iqa_inter_ab: -6.901365e-01
-normalizer_rmsd_iqa_inter_ab: 2.689259e+00
+normalizer_mean_iqa_intra_a: 0.0
+normalizer_rmsd_iqa_intra_a: 1.0
+normalizer_mean_iqa_inter_ab: 0.0
+normalizer_rmsd_iqa_inter_ab: 1.0
 iqa_intra_a_coef: 1.0
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
