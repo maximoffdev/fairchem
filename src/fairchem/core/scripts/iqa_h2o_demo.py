@@ -8,8 +8,9 @@ from ase.calculators.calculator import all_changes
 from fairchem.core import load_predict_unit
 from fairchem.core.calculate import IQACalculator
 from fairchem.core.units.mlip_unit.api.inference import inference_settings_default
+import numpy as np
 
-MODEL_PATH = "../inference/inference_ckpt.pt"
+MODEL_PATH = "../models/inference_ckpt.pt"
 TASK_NAME = "iqa_pkl"
 
 

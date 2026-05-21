@@ -8,6 +8,8 @@ import numpy as np
 import plotly.graph_objects as go
 from ase import Atoms
 from ase.calculators.calculator import all_changes
+from ase.build import molecule
+from ase.build.attach import attach
 
 from fairchem.core import load_predict_unit
 from fairchem.core.calculate import IQACalculator
@@ -16,7 +18,7 @@ from fairchem.core.units.mlip_unit.api.inference import inference_settings_defau
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate an H2 IQA dispersion curve from node+edge sums."
+        description="Generate an NH3 dimer IQA dispersion curve from node+edge sums."
     )
     parser.add_argument(
         "--model",
@@ -37,14 +39,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dmin",
         type=float,
-        default=0.4,
-        help="Minimum H-H distance in Angstrom.",
+        default=2.0,
+        help="Minimum N-N separation in Angstrom.",
     )
     parser.add_argument(
         "--dmax",
         type=float,
-        default=6.0,
-        help="Maximum H-H distance in Angstrom.",
+        default=8.0,
+        help="Maximum N-N separation in Angstrom.",
     )
     parser.add_argument(
         "--num",
@@ -74,13 +76,13 @@ def _parse_args() -> argparse.Namespace:
         "--charge",
         type=int,
         default=0,
-        help="Total charge for H2.",
+        help="Total charge for the dimer.",
     )
     parser.add_argument(
         "--spin",
         type=int,
         default=0,
-        help="Spin for H2.",
+        help="Spin for the dimer.",
     )
     parser.add_argument(
         "--relative",
@@ -89,7 +91,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--plot",
-        default="h2_iqa_dispersion.html",
+        default="nh3_dimer_iqa_dispersion.html",
         help="Output interactive HTML plot path.",
     )
     parser.add_argument(
@@ -100,8 +102,10 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_h2(distance: float, charge: int, spin: int) -> Atoms:
-    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, distance]])
+def _build_nh3_dimer(separation: float, charge: int, spin: int) -> Atoms:
+    nh3_1 = molecule("NH3")
+    nh3_2 = molecule("NH3")
+    atoms = attach(nh3_1, nh3_2, distance=separation, direction=[0, 0, 1])
     atoms.info["charge"] = charge
     atoms.info["spin"] = spin
     return atoms
@@ -131,11 +135,9 @@ def main() -> None:
     energies = []
 
     for distance in distances:
-        atoms = _build_h2(distance, args.charge, args.spin)
+        atoms = _build_nh3_dimer(distance, args.charge, args.spin)
         calculator.calculate(
-            atoms,
-            properties=calculator.implemented_properties,
-            system_changes=all_changes,
+            atoms, properties=calculator.implemented_properties, system_changes=all_changes
         )
         total_energy = 0.0
         for key in ("iqa_intra_a", "iqa_inter_a", "iqa_inter_ab"):
@@ -161,15 +163,21 @@ def main() -> None:
     plot_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig = go.Figure(
-        data=[go.Scatter(x=distances, y=energies, mode="lines", name="H2 IQA")]
+        data=[
+            go.Scatter(
+                x=distances,
+                y=energies,
+                mode="lines",
+                name="NH3 dimer IQA",
+            )
+        ]
     )
     fig.update_layout(
-        title="H2 IQA dispersion curve",
-        xaxis_title="H-H distance (Angstrom)",
+        title="NH3 dimer IQA dispersion curve",
+        xaxis_title="N-N distance (Angstrom)",
         yaxis_title="Total IQA energy (eV)",
         template="plotly_white",
     )
-
     fig.add_annotation(
         x=0.5,
         y=1.08,
