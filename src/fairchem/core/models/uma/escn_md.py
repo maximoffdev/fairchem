@@ -1350,11 +1350,19 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 proj_hidden,
                 lmax=self.lmax_list[0],
             )
-            self.proj_edges_2 = SO3_Linear(
+            # Split final edge projection into two heads: g_theta and h_theta.
+            self.proj_edges_g_2 = SO3_Linear(
                 proj_hidden,
                 self.output_channels_edges,
                 lmax=self.lmax_list[0],
             )
+            self.proj_edges_h_2 = SO3_Linear(
+                proj_hidden,
+                self.output_channels_edges,
+                lmax=self.lmax_list[0],
+            )
+            # Backwards-compatible alias for existing code that expects proj_edges_2
+            self.proj_edges_2 = self.proj_edges_h_2
         if self.node_prediction and self.output_channels_nodes > 0:
             self.proj_nodes_1 = SO3_Linear(
                 self.num_heads * self.attn_value_channels,
@@ -1552,15 +1560,38 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
 
         # === EBDM-origin: Edge prediction (if enabled) ===
         if self.edge_prediction and self.output_channels_edges > 0:
-            out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
-            out_embedding_edges = out_embedding_edges.narrow(
-                1, self.num_irreps_passed, 2 * self.out_degree + 1
-            )
-            edge_pred = self._squeeze_scalar_output(out_embedding_edges)
+            # Shared trunk projection
+            proj_edges = self.proj_edges_1(x_message)
+
+            # Two small heads: g_theta (log-amplitude) and h_theta (smooth correction)
+            out_g = self.proj_edges_g_2(proj_edges)
+            out_h = self.proj_edges_h_2(proj_edges)
+
+            out_g = out_g.narrow(1, self.num_irreps_passed, 2 * self.out_degree + 1)
+            out_h = out_h.narrow(1, self.num_irreps_passed, 2 * self.out_degree + 1)
+
+            g_theta = self._squeeze_scalar_output(out_g)
+            h_theta = self._squeeze_scalar_output(out_h)
+
             if gp_utils.initialized():
-                edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
-            # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key
-            output[self.edge_task_name] = {"edge_pred": edge_pred}
+                g_theta = gp_utils.gather_from_model_parallel_region(g_theta, dim=0)
+                h_theta = gp_utils.gather_from_model_parallel_region(h_theta, dim=0)
+
+            # Compute interatomic distance r_AB from edge_distance_vec and form singular term
+            r = edge_distance_vec.norm(dim=1)
+            eps = 1e-6
+            r_safe = r.clamp_min(eps)
+
+            edge_pred = torch.exp(g_theta) / r_safe
+            edge_pred = edge_pred + h_theta
+
+            # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key. Keep edge_pred key
+            # for backward compatibility and expose g_theta/h_theta for debugging.
+            output[self.edge_task_name] = {
+                "edge_pred": edge_pred,
+                "g_theta": g_theta,
+                "h_theta": h_theta,
+            }
 
         # === EBDM-origin: Aggregate edge messages to nodes ===
         # Sum all incoming edge messages for each target node. This is the key
