@@ -6,7 +6,7 @@ use_composition_embedding: true
 use_global_embedding: false
 
 max_num_elements: 100
-sphere_channels: 128 #128 ursprünlich
+sphere_channels: 256 #128 ursprünlich
 lmax: 2
 mmax: 2
 
@@ -24,7 +24,7 @@ regress_forces: True
 regress_stress: ${regress_stress}
 direct_forces: ${direct_forces}
 
-num_layers: 8 #4 ursprünglich
+num_layers: 4 #4 ursprünglich
 hidden_channels: 128 #128 ursprünglich
 norm_type: rms_norm_sh
 act_type: gate
