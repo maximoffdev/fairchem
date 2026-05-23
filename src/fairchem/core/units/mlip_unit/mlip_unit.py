@@ -187,7 +187,7 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
     """
 
     output_masks = {task.name: torch.isfinite(batch[task.name])}
-    if "forces" in task.name or "dipole_intra" in task.name or "dipole_vector" in task.name or "dipole_bond" in task.name:
+    if "forces" in task.name or "dipole_intra" in task.name or "dipole_vector" in task.name or "dipole_bond" in task.name or "dipole_vector_gated" in task.name or "dipole_vector_attention" in task.name or "dipole_vector_deep" in task.name:
         output_masks[task.name] = output_masks[task.name].all(dim=1)
 
     for dset in set(batch.dataset_name):
