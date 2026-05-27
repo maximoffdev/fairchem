@@ -1,10 +1,12 @@
 defaults:
-  - cluster: leipzig_cluster
+  - cluster: local
   - dataset: iqa_components
   - tasks: iqa_decompose
-  - backbone: K10L4
-  - element_refs: iso_atom_elem_refs
-  - _self_
+  - backbone: K4L2_light
+  - element_refs: iqa_intra_elem_refs
+
+
+
 
 job:
   device_type: ${cluster.device}
@@ -20,7 +22,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-equi-1-1-no-norm-m
+  run_name: iqa-decompose-local-k4l2-light
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -40,9 +42,11 @@ cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
 direct_forces: False
 
-# iqa_kinetic_coef: 1.0
-# iqa_vne_coef: 1.0
-# iqa_vee_coef: 1.0
+# iqa_kinetic_coef: 0.2
+# iqa_vne_coef: 0.2
+# iqa_vee_coef: 0.2
+# iqa_vee_c_coef: 0.2
+# iqa_vee_x_coef: 0.2
 # iqa_inter_coef: 1.0
 # # Edge-level coefficients
 # iqa_inter_edge_coef: 1.0
@@ -50,11 +54,26 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
+normalizer_mean_iqa_kinetic: 0.0
+normalizer_rmsd_iqa_kinetic: 1.0
+normalizer_mean_iqa_vne: 0.0
+normalizer_rmsd_iqa_vne: 1.0
+normalizer_mean_iqa_vee: 0.0
+normalizer_rmsd_iqa_vee: 1.0
+normalizer_mean_iqa_vee_c: 0.0
+normalizer_rmsd_iqa_vee_c: 1.0
+normalizer_mean_iqa_vee_x: 0.0
+normalizer_rmsd_iqa_vee_x: 1.0
 normalizer_mean_iqa_intra_a: 0.0
 normalizer_rmsd_iqa_intra_a: 1.0
 normalizer_mean_iqa_inter_ab: 0.0
 normalizer_rmsd_iqa_inter_ab: 1.0
 iqa_intra_a_coef: 1.0
+iqa_kinetic_coef: 0.2
+iqa_vne_coef: 0.2
+iqa_vee_coef: 0.2
+iqa_vee_c_coef: 0.2
+iqa_vee_x_coef: 0.2
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
 
@@ -95,7 +114,17 @@ eval_dataloader:
 
 heads:
   iqa_combined_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    module: fairchem.core.models.uma.escn_md.IQA_IntraSO2MultiHead
+    term_names:
+      - iqa_kinetic
+      - iqa_vne
+      - iqa_vee
+      - iqa_vee_c
+      - iqa_vee_x
+    aggregate_name: iqa_intra_a
+    predict_aggregate: true
+    edge_prediction: true
+    edge_task_name: iqa_inter_ab
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner

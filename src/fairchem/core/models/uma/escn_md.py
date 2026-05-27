@@ -896,6 +896,77 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         return {"pred": pred}
 
 
+class IQA_IntraDecompositionHead(nn.Module, HeadInterface):
+    """Predict decomposed intra-atomic IQA terms from the last node embedding."""
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        dropout: float = 0.0,
+        term_names: list[str] | None = None,
+        aggregate_name: str = "iqa_intra_a",
+        predict_aggregate: bool = True,
+    ) -> None:
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        self.term_names = term_names or [
+            "iqa_kinetic",
+            "iqa_vne",
+            "iqa_vee",
+            "iqa_vee_c",
+            "iqa_vee_x",
+        ]
+        self.aggregate_name = aggregate_name
+        self.predict_aggregate = predict_aggregate
+
+        if self.aggregate_name in self.term_names:
+            raise ValueError("aggregate_name must not overlap with term_names")
+
+        input_dim = self.sphere_channels
+
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        )
+
+        self.term_heads = nn.ModuleDict(
+            {
+                term_name: nn.Sequential(
+                    nn.LayerNorm(self.hidden_channels),
+                    nn.Linear(self.hidden_channels, 1),
+                )
+                for term_name in self.term_names
+            }
+        )
+
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        node_emb = emb["node_embedding"]
+
+        x = node_emb.narrow(1, 0, 1).squeeze(1)
+        x = self.proj(x)
+
+        outputs: dict[str, torch.Tensor] = {}
+        component_preds: list[torch.Tensor] = []
+
+        for term_name in self.term_names:
+            pred = self.term_heads[term_name](x).squeeze(-1)
+            if gp_utils.initialized():
+                pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+            outputs[term_name] = {"pred": pred}
+            component_preds.append(pred)
+
+        if self.predict_aggregate:
+            aggregate_pred = torch.stack(component_preds, dim=0).sum(dim=0)
+            outputs[self.aggregate_name] = {"pred": aggregate_pred}
+
+        return outputs
+
+
 class IQA_Edge_Head(nn.Module, HeadInterface):
     """
     Edge-level head: predict pairwise IQA interactions using edge features.
@@ -1601,6 +1672,223 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 output[self.extra_node_task_name] = {"node_pred": node_pred_extra}
 
         return output
+
+
+class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
+    """SO2 attention head that emits multiple node predictions (one per subterm).
+
+    This subclass reuses most of the SO2 attention machinery but replaces the
+    single `proj_nodes_2` with a `ModuleDict` of per-term `SO3_Linear` heads
+    so each subterm gets its own final projection (as requested: different
+    `proj_nodes_2` for each sub term).
+    """
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        term_names: list[str],
+        aggregate_name: str = "iqa_intra_a",
+        predict_aggregate: bool = False,
+        edge_prediction: bool = False,
+        edge_task_name: str = "iqa_inter_ab",
+        sphere_channels: int | None = None,
+        hidden_channels: int | None = None,
+        num_heads: int = 8,
+        attn_alpha_channels: int | None = None,
+        attn_value_channels: int | None = None,
+        out_degree: int = 0,
+        lmax_list: list[int] | None = None,
+        mmax_list: list[int] | None = None,
+        **kwargs,
+    ) -> None:
+        # Create parent with node_prediction enabled but single-node proj_nodes_2
+        super().__init__(
+            backbone=backbone,
+            sphere_channels=sphere_channels,
+            hidden_channels=hidden_channels,
+            num_heads=num_heads,
+            attn_alpha_channels=attn_alpha_channels,
+            attn_value_channels=attn_value_channels,
+            output_channels_edges=1 if edge_prediction else 0,
+            output_channels_nodes=1,
+            out_degree=out_degree,
+            lmax_list=lmax_list,
+            mmax_list=mmax_list,
+            edge_prediction=edge_prediction,
+            edge_task_name=edge_task_name,
+            **kwargs,
+        )
+
+        self.term_names = list(term_names)
+        self.aggregate_name = aggregate_name
+        self.predict_aggregate = predict_aggregate
+
+        if self.aggregate_name in self.term_names:
+            raise ValueError("aggregate_name must not overlap with term_names")
+
+        # compute proj_hidden same as in parent
+        proj_hidden = self.num_heads * max(self.attn_value_channels // 2, 1)
+
+        # replace parent proj_nodes_2 with per-term modules
+        # keep proj_nodes_1 shared
+        self.proj_nodes_2_terms = nn.ModuleDict()
+        for term in self.term_names:
+            self.proj_nodes_2_terms[term] = SO3_Linear(
+                proj_hidden, 1, lmax=self.lmax_list[0]
+            )
+
+        # disable the single proj_nodes_2 to avoid accidental use
+        self.proj_nodes_2 = None
+
+    def forward(self, data, emb):
+        # reuse parent's forward up to x_nodes creation
+        # We'll copy-paste the necessary upstream logic to obtain `x_nodes`.
+        # For brevity and safety we call the parent forward but intercept the
+        # intermediate `x_nodes` by re-running the parts that compute it.
+
+        # Recompute rotations and message passing exactly as parent does
+        edge_index = emb["edge_index"]
+        node_embedding = emb["node_embedding"]
+        edge_embedding = emb["edge_embedding"]
+        edge_distance_vec = emb["edge_distance_vec"]
+
+        num_edges = edge_index.shape[1]
+        num_nodes = node_embedding.shape[0]
+
+        x_source = node_embedding[edge_index[0]]
+        x_target = node_embedding[edge_index[1]]
+        x_message_data = torch.cat((x_source, x_target), dim=2)
+
+        x_edge = edge_embedding.narrow(1, 0, self.edge_distance_channels)
+        if self.use_atom_edge_embedding:
+            source_element = data["atomic_numbers"][edge_index[0]]
+            target_element = data["atomic_numbers"][edge_index[1]]
+            source_embedding = self.source_embedding(source_element)
+            target_embedding = self.target_embedding(target_element)
+            x_edge = torch.cat((x_edge, source_embedding, target_embedding), dim=1)
+
+        wigner, wigner_inv = self.backbone._get_rotmat_and_wigner(
+            edge_distance_vec,
+            use_cuda_graph=self.backbone.use_cuda_graph_wigner
+            and "cuda" in get_device_for_local_rank()
+            and not self.training,
+        )
+        x_message = torch.bmm(wigner, x_message_data)
+
+        if self.use_m_share_rad:
+            x_edge_weight = self.rad_func(x_edge)
+            x_edge_weight = x_edge_weight.view(
+                -1,
+                (max(self.lmax_list) + 1),
+                2 * self.sphere_channels,
+            )
+            x_edge_weight = torch.index_select(
+                x_edge_weight,
+                dim=1,
+                index=self.expand_index,
+            )
+            x_message = x_message * x_edge_weight
+
+        if self.use_s2_act_attn:
+            x_message = self.so2_conv_1(x_message, x_edge)
+        else:
+            x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+
+        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_s2_act_attn:
+            x_message = self.s2_act(x_message)
+        elif self.use_gate_act:
+            x_0_gating = x_0_extra.narrow(
+                1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels
+            )
+            x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+            x_message = self.gate_act(x_0_gating, x_message)
+        else:
+            if self.use_sep_s2_act:
+                x_0_gating = x_0_extra.narrow(
+                    1,
+                    x_alpha_num_channels,
+                    x_0_extra.shape[1] - x_alpha_num_channels,
+                )
+                x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+                x_message = self.s2_act(x_0_gating, x_message)
+            else:
+                x_0_alpha = x_0_extra
+                x_message = self.s2_act(x_message)
+
+        if self.use_s2_act_attn:
+            x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
+        else:
+            x_message = self.so2_conv_2(x_message, x_edge)
+
+        if self.use_s2_act_attn:
+            alpha = x_0_extra
+        else:
+            x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
+            x_0_alpha = self.alpha_norm(x_0_alpha)
+            x_0_alpha = self.alpha_act(x_0_alpha)
+            alpha = torch.einsum("bik,ik->bi", x_0_alpha, self.alpha_dot)
+
+        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
+        alpha = alpha.view(alpha.shape[0], 1, self.num_heads, 1)
+        if self.alpha_dropout is not None:
+            alpha = self.alpha_dropout(alpha)
+
+        attn = x_message.view(
+            num_edges,
+            x_message.shape[1],
+            self.num_heads,
+            self.attn_value_channels,
+        )
+        attn = attn * alpha
+        x_message = attn.view(
+            num_edges,
+            attn.shape[1],
+            self.num_heads * self.attn_value_channels,
+        )
+
+        x_message = torch.bmm(wigner_inv, x_message)
+
+        outputs: dict[str, dict] = {}
+
+        if self.edge_prediction and self.output_channels_edges > 0:
+            out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
+            out_embedding_edges = out_embedding_edges.narrow(
+                1, self.num_irreps_passed, 2 * self.out_degree + 1
+            )
+            edge_pred = self._squeeze_scalar_output(out_embedding_edges)
+            if gp_utils.initialized():
+                edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
+            outputs[self.edge_task_name] = {"edge_pred": edge_pred}
+
+        # aggregate to nodes
+        x_nodes = torch_geometric.utils.scatter(
+            x_message,
+            edge_index[1],
+            dim=0,
+            dim_size=num_nodes,
+            reduce="sum",
+        )
+
+        # per-term projections
+        proj_nodes = self.proj_nodes_1(x_nodes)
+        component_preds: list[torch.Tensor] = []
+        for term in self.term_names:
+            out_embedding_nodes_term = self.proj_nodes_2_terms[term](proj_nodes)
+            out_embedding_nodes_term = out_embedding_nodes_term.narrow(
+                1, self.num_irreps_passed, 2 * self.out_degree + 1
+            )
+            node_pred = self._squeeze_scalar_output(out_embedding_nodes_term)
+            if gp_utils.initialized():
+                node_pred = gp_utils.gather_from_model_parallel_region(node_pred, dim=0)
+            outputs[term] = {"node_pred": node_pred}
+            component_preds.append(node_pred)
+
+        if self.predict_aggregate:
+            aggregate_pred = torch.stack(component_preds, dim=0).sum(dim=0)
+            outputs[self.aggregate_name] = {"node_pred": aggregate_pred}
+
+        return outputs
 
 
 class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):

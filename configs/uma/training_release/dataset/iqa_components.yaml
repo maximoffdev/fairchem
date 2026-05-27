@@ -5,9 +5,11 @@ iqa_train:
   ht2ev: true
   key_mapping:
     energy: e_total
-    # iqa_kinetic: T(A)
-    # iqa_vne: Vne(A,A)
-    # iqa_vee: Vee(A,A)
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
     iqa_intra_a: E_IQA_Intra(A)
     iqa_inter_a: E_IQA_Inter(A)
     iqa_inter_ab: E_IQA_Inter(A,B)/2
@@ -26,9 +28,11 @@ iqa_val:
   ht2ev: true
   key_mapping:
     energy: e_total
-    # iqa_kinetic: T(A)
-    # iqa_vne: Vne(A,A)
-    # iqa_vee: Vee(A,A)
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
     iqa_intra_a: E_IQA_Intra(A)
     iqa_inter_a: E_IQA_Inter(A)
     iqa_inter_ab: E_IQA_Inter(A,B)/2
