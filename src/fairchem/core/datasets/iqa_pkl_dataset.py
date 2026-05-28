@@ -24,7 +24,7 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
     return x / 27.211386245988
 
 
-def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
+def Ht_to_eV(x: torch.Tensor | None) -> torch.Tensor | None:
     if x is None:
         return None
     return x * 27.211386245988
