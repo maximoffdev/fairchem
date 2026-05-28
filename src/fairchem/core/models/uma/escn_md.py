@@ -7,13 +7,17 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+import copy
 import logging
+import math
 import os
 from typing import TYPE_CHECKING, Literal, Dict
 
 import torch
 import torch.nn as nn
 from torch.profiler import record_function
+
+import torch_geometric.utils
 
 from fairchem.core.common import gp_utils
 from fairchem.core.common.distutils import get_device_for_local_rank
@@ -40,8 +44,16 @@ from fairchem.core.models.uma.nn.layer_norm import (
     get_normalization_layer,
 )
 from fairchem.core.models.uma.nn.mole_utils import MOLEInterface
-from fairchem.core.models.uma.nn.radial import GaussianSmearing
+from fairchem.core.models.uma.nn.radial import GaussianSmearing, RadialMLP
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
+from fairchem.core.models.uma.nn.so2_layers import SO2_Convolution
+from fairchem.core.models.uma.nn.so2_tp import SO2_Convolution_TensorProduct
+from fairchem.core.models.uma.nn.activation import (
+    GateActivation,
+    S2Activation,
+    SeparableS2Activation,
+    SmoothLeakyReLU,
+)
 from fairchem.core.models.utils.irreps import cg_change_mat, irreps_sum
 
 from .escn_md_block import eSCNMD_Block
@@ -552,7 +564,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         if self.output_edge_features:
             out["edge_embedding"] = x_edge
             out["edge_index"] = graph_dict["edge_index"]
-            
+            out["edge_distance_vec"] = graph_dict["edge_distance_vec"]
+
         return out
 
     def _init_gp_partitions(self, graph_dict, atomic_numbers_full):
@@ -845,15 +858,6 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
             nn.Linear(self.hidden_channels, self.hidden_channels),
         )
         
-        # Residual Block 2
-        self.res2 = nn.Sequential(
-            nn.LayerNorm(self.hidden_channels),
-            nn.Linear(self.hidden_channels, self.hidden_channels),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.hidden_channels, self.hidden_channels),
-        )
-
         # Final output
         self.final = nn.Sequential(
             nn.LayerNorm(self.hidden_channels),
@@ -865,22 +869,15 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         node_emb = emb["node_embedding"]
         
         # 1. Extract L=0 (Scalar) -> (N, C)
-        # narrow(dim, start, length)
         scalars = node_emb.narrow(1, 0, 1).squeeze(1)
         
         features = [scalars]
         
         # 2. Extract Norms of L>0 -> (N, C)
-        # L=1 is at indices 1..3 (length 3)
-        # L=2 is at indices 4..8 (length 5)
-        # ...
         current_idx = 1
         for l in range(1, self.lmax + 1):
             length = 2 * l + 1
-            # Extract vector/tensor part
             vec = node_emb.narrow(1, current_idx, length) # (N, 2l+1, C)
-            # Compute norm over the component dimension (dim 1)
-            # norm shape: (N, C)
             vec_norm = vec.norm(dim=1) 
             features.append(vec_norm)
             current_idx += length
@@ -891,10 +888,12 @@ class IQA_Energy_Head(nn.Module, HeadInterface):
         # 4. MLP with Residuals
         x = self.proj(x)
         x = x + self.res1(x)
-        x = x + self.res2(x)
-        e = self.final(x).squeeze(-1)
+        pred = self.final(x).squeeze(-1)
 
-        return {"pred": e}
+        if gp_utils.initialized():
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+
+        return {"pred": pred}
 
 
 class IQA_Edge_Head(nn.Module, HeadInterface):
@@ -960,33 +959,72 @@ class IQA_Edge_Head(nn.Module, HeadInterface):
         return {"pred": e}
 
 class IQA_Node_Head2(nn.Module, HeadInterface):
-    def __init__(self, backbone: eSCNMDBackbone) -> None:
+    """
+    Advanced per-atom head: predict per-atom properties using L=0 features 
+    AND norms of L>0 features. Includes Dropout, LayerNorm, and Residual connections.
+    """
+    def __init__(self, backbone: eSCNMDBackbone, dropout: float = 0.1) -> None:
         super().__init__()
-        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        
+        # We will concatenate L=0 features with the norms of L=1..Lmax features.
+        # Input dim = C * (Lmax + 1)
+        input_dim = self.sphere_channels * (self.lmax + 1)
+        
+        # Projection from combined features to hidden dim
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout)
+        )
 
-    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
-        #print("node emb", emb["node_embedding"].shape)
-        forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
-        forces = forces.narrow(1, 0, 1)
-        forces = forces.squeeze().contiguous()
+        # Residual Block 1
+        self.res1 = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_channels, self.hidden_channels),
+        )
+        
+        # Final output
+        self.final = nn.Sequential(
+            nn.LayerNorm(self.hidden_channels),
+            nn.Linear(self.hidden_channels, 1)
+        )
+
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # emb["node_embedding"]: (N, (Lmax+1)^2, C)
+        node_emb = emb["node_embedding"]
+        
+        # 1. Extract L=0 (Scalar) -> (N, C)
+        scalars = node_emb.narrow(1, 0, 1).squeeze(1)
+        
+        features = [scalars]
+        
+        # 2. Extract Norms of L>0 -> (N, C)
+        current_idx = 1
+        for l in range(1, self.lmax + 1):
+            length = 2 * l + 1
+            vec = node_emb.narrow(1, current_idx, length) # (N, 2l+1, C)
+            vec_norm = vec.norm(dim=1) 
+            features.append(vec_norm)
+            current_idx += length
+            
+        # 3. Concatenate all invariants
+        x = torch.cat(features, dim=-1) # (N, C * (Lmax+1))
+        
+        # 4. MLP with Residuals
+        x = self.proj(x)
+        x = x + self.res1(x)
+        pred = self.final(x).squeeze(-1)
+
         if gp_utils.initialized():
-            forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
-        return {"pred": forces}
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
 
-# class IQA_Edge_Head2(nn.Module, HeadInterface):
-#     def __init__(self, backbone: eSCNMDBackbone) -> None:
-#         super().__init__()
-#         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
-
-#     def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
-#         print("Edge emb", emb["node_embedding"].shape)
-#         forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
-#         forces = forces.narrow(1, 0, 1)
-#         print("Forces shape before reshape:", forces.shape)
-#         forces = forces.squeeze().contiguous()
-#         if gp_utils.initialized():
-#             forces = gp_utils.gather_from_model_parallel_region(forces, dim=0)
-#         return {"pred": forces}
+        return {"pred": pred}
 
 class IQA_Edge_Head2(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
@@ -1001,7 +1039,6 @@ class IQA_Edge_Head2(nn.Module, HeadInterface):
                            "Set backbone output_edge_features=True")
         
         edge_emb = emb["edge_embedding"]  # (num_edges, edge_input_dim)
-        #print("Edge emb shape:", edge_emb.shape)
         
         # Simple linear projection to scalar
         pred = self.linear(edge_emb).squeeze(-1)  # (num_edges,)
@@ -1010,6 +1047,544 @@ class IQA_Edge_Head2(nn.Module, HeadInterface):
             pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
         
         return {"pred": pred}
+
+class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
+    def __init__(self, backbone, lmax=1):
+        super().__init__()
+        self.sphere_channels = backbone.sphere_channels
+        self.backbone_lmax = backbone.lmax
+
+        # Calculate edge embedding dimension: distance_basis + source_embedding + target_embedding
+        num_distance_basis = backbone.num_distance_basis
+        self.edge_embedding_dim = num_distance_basis + 2 * backbone.edge_channels
+
+        # SO3_Linear: Process aggregated node features equivariantly
+        self.so3_layer = SO3_Linear(
+            in_features=self.sphere_channels,
+            out_features=self.sphere_channels,
+            lmax=self.backbone_lmax
+        )
+
+        # Modulation network: use invariant edge embeddings
+        self.edge_modulation = nn.Sequential(
+            nn.Linear(self.edge_embedding_dim, self.sphere_channels),
+            nn.SiLU(),
+            nn.Linear(self.sphere_channels, self.sphere_channels)
+        )
+
+        # Final linear projection to scalar
+        self.linear = nn.Linear(self.sphere_channels, 1)
+
+    def forward(self, data, emb):
+        edge_index = emb["edge_index"]
+        node_emb = emb["node_embedding"]  # (num_atoms, (lmax+1)^2, sphere_channels)
+        edge_embedding = emb["edge_embedding"]  # (num_edges, edge_embedding_dim) - invariant
+
+        # Get source/target node embeddings
+        src_emb = node_emb[edge_index[0]]  # (num_edges, (lmax+1)^2, sphere_channels)
+        tgt_emb = node_emb[edge_index[1]]  # (num_edges, (lmax+1)^2, sphere_channels)
+
+        # Combine source and target: sum preserves equivariance
+        edge_feat = src_emb + tgt_emb  # (num_edges, (lmax+1)^2, sphere_channels)
+
+        # Apply SO3_Linear to transform equivariantly
+        x = self.so3_layer(edge_feat)
+
+        # Extract only L=0 component (invariant scalar at index 0)
+        x = x.narrow(1, 0, 1)  # (num_edges, 1, sphere_channels)
+
+        # Modulate by edge embeddings (distance + element chemistry)
+        modulation = self.edge_modulation(edge_embedding)  # (num_edges, sphere_channels)
+        x = x * modulation.unsqueeze(1)  # (num_edges, 1, sphere_channels)
+
+        # Final projection to scalar
+        pred = self.linear(x.squeeze(1)).squeeze(-1)  # (num_edges,)
+        return {"pred": pred}
+
+
+class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
+    """SO(2)-equivariant graph attention head for joint node/edge prediction.
+
+    **EBDM-ORIGIN REFERENCE:**
+    This class is ported from experimental/EBDM/models/transformer_block.py::SO2EquivariantGraphAttentionNodeEdgePrediction.
+    The architecture and hyperparameter flags match the EBDM reference exactly.
+
+    **FAIRCHEM ADAPTATIONS:**
+    1. Constructor takes backbone object (not separate params) to extract config.
+    2. Forward signature uses fairchem's HeadInterface contract: forward(data, emb) with emb as dict.
+    3. Output is task-keyed dict (not tuple) for MLIP loss routing.
+    4. Uses raw PyTorch tensors instead of SO3_Embedding object wrapper.
+    5. Rotation performed via backbone._get_rotmat_and_wigner() instead of object methods.
+    """
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        sphere_channels: int | None = None,
+        hidden_channels: int | None = None,
+        num_heads: int = 8,
+        attn_alpha_channels: int | None = None,
+        attn_value_channels: int | None = None,
+        output_channels_edges: int = 1,
+        output_channels_nodes: int = 1,
+        out_degree: int = 0,
+        lmax_list: list[int] | None = None,
+        mmax_list: list[int] | None = None,
+        SO3_rotation=None,
+        mappingReduced: CoefficientMapping | None = None,
+        SO3_grid: nn.ModuleDict | None = None,
+        max_num_elements: int | None = None,
+        edge_channels_list: list[int] | None = None,
+        use_atom_edge_embedding: bool = True,
+        use_m_share_rad: bool = False,
+        activation: str = "scaled_silu",
+        use_tp_reparam: bool = False,
+        use_s2_act_attn: bool = False,
+        use_attn_renorm: bool = True,
+        use_gate_act: bool = False,
+        use_sep_s2_act: bool = True,
+        alpha_drop: float = 0.0,
+        edge_prediction: bool = True,
+        node_prediction: bool = True,
+        edge_task_name: str = "iqa_inter_ab",
+        node_task_name: str = "iqa_intra_a",
+    ) -> None:
+        super().__init__()
+
+        # === EBDM-origin: Parameter initialization ===
+        self.backbone = backbone
+        self.sphere_channels = (
+            sphere_channels if sphere_channels is not None else backbone.sphere_channels
+        )
+        self.hidden_channels = (
+            hidden_channels if hidden_channels is not None else backbone.hidden_channels
+        )
+        self.num_heads = num_heads
+        self.output_channels_edges = output_channels_edges
+        self.output_channels_nodes = output_channels_nodes
+
+        default_lmax = backbone.lmax
+        default_mmax = backbone.mmax
+        self.lmax_list = lmax_list if lmax_list is not None else [default_lmax]
+        self.mmax_list = mmax_list if mmax_list is not None else [default_mmax]
+        self.num_resolutions = len(self.lmax_list)
+
+        self.edge_prediction = edge_prediction
+        self.node_prediction = node_prediction
+        self.edge_task_name = edge_task_name
+        self.node_task_name = node_task_name
+        self.out_degree = out_degree
+
+        # === EBDM-origin: Save rotation/mapping references ===
+        self.SO3_rotation = SO3_rotation
+        self.mappingReduced = (
+            mappingReduced if mappingReduced is not None else backbone.mappingReduced
+        )
+        self.SO3_grid = SO3_grid if SO3_grid is not None else backbone.SO3_grid
+        self.max_num_elements = (
+            max_num_elements
+            if max_num_elements is not None
+            else backbone.max_num_elements
+        )
+
+        # === EBDM-origin: Feature flags ===
+        self.use_atom_edge_embedding = use_atom_edge_embedding
+        self.use_m_share_rad = use_m_share_rad
+        self.activation = activation
+        self.use_tp_reparam = use_tp_reparam
+        self.use_s2_act_attn = use_s2_act_attn
+        self.use_attn_renorm = use_attn_renorm
+        self.use_gate_act = use_gate_act
+        self.use_sep_s2_act = use_sep_s2_act
+        if self.use_s2_act_attn and (self.use_gate_act or self.use_sep_s2_act):
+            raise NotImplementedError(
+                "use_s2_act_attn=True currently supports only non-gated S2 activation "
+                "in this fairchem tensor implementation."
+            )
+
+        # === FAIRCHEM ADAPTATION: Edge channel setup ===
+        # In fairchem, edge_channels_list comes from backbone config.
+        # We extract first element (distance channels) and optionally append atom embeddings.
+        if edge_channels_list is None:
+            edge_channels_list = copy.deepcopy(backbone.edge_channels_list)
+        self.edge_channels_list = copy.deepcopy(edge_channels_list)
+        self.edge_distance_channels = backbone.num_distance_basis
+
+        if self.use_atom_edge_embedding:
+            self.source_embedding = nn.Embedding(
+                self.max_num_elements, self.edge_channels_list[-1]
+            )
+            self.target_embedding = nn.Embedding(
+                self.max_num_elements, self.edge_channels_list[-1]
+            )
+            nn.init.uniform_(self.source_embedding.weight.data, -0.001, 0.001)
+            nn.init.uniform_(self.target_embedding.weight.data, -0.001, 0.001)
+            self.edge_channels_list[0] = (
+                self.edge_distance_channels + 2 * self.edge_channels_list[-1]
+            )
+        else:
+            self.source_embedding = None
+            self.target_embedding = None
+            self.edge_channels_list[0] = self.edge_distance_channels
+
+        self.edge_embedding_dim = self.edge_channels_list[0]
+
+        # === EBDM-origin: Attention channel sizing ===
+        self.attn_alpha_channels = (
+            attn_alpha_channels
+            if attn_alpha_channels is not None
+            else (self.hidden_channels // self.num_heads)
+        )
+        self.attn_value_channels = (
+            attn_value_channels
+            if attn_value_channels is not None
+            else (self.hidden_channels // self.num_heads)
+        )
+
+        # === EBDM-origin: Output irrep extraction ===
+        self.num_irreps_passed = 0
+        for l in range(self.out_degree):
+            self.num_irreps_passed += 2 * l + 1
+
+        # === EBDM-origin: Attention mechanism setup ===
+        if self.use_s2_act_attn:
+            self.alpha_norm = None
+            self.alpha_act = None
+            self.alpha_dot = None
+        elif self.use_attn_renorm:
+            self.alpha_norm = nn.LayerNorm(self.attn_alpha_channels)
+        else:
+            self.alpha_norm = nn.Identity()
+        if not self.use_s2_act_attn:
+            self.alpha_act = SmoothLeakyReLU()
+            self.alpha_dot = nn.Parameter(
+                torch.randn(self.num_heads, self.attn_alpha_channels)
+            )
+            std = 1.0 / math.sqrt(self.attn_alpha_channels)
+            torch.nn.init.uniform_(self.alpha_dot, -std, std)
+
+        self.alpha_dropout = nn.Dropout(alpha_drop) if alpha_drop > 0.0 else None
+
+        # === EBDM-origin: SO(2) convolution setup ===
+        extra_m0_output_channels = None
+        if not self.use_s2_act_attn:
+            extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
+            if self.use_gate_act:
+                extra_m0_output_channels += max(self.lmax_list) * self.hidden_channels
+            elif self.use_sep_s2_act:
+                extra_m0_output_channels += self.hidden_channels
+
+        # === EBDM-origin: m-share-rad radial weighting path ===
+        self.rad_func = None
+        if self.use_m_share_rad:
+            m_share_edge_channels = copy.deepcopy(self.edge_channels_list)
+            m_share_edge_channels.append(
+                2 * self.sphere_channels * (max(self.lmax_list) + 1)
+            )
+            self.rad_func = RadialMLP(m_share_edge_channels)
+            self.register_buffer(
+                "expand_index",
+                self.mappingReduced.l_harmonic.clone(),
+                persistent=False,
+            )
+
+        # === FAIRCHEM ADAPTATION: SO2 convolution class selection ===
+        # In EBDM, class is passed as parameter. Here we select based on use_tp_reparam flag.
+        # FAIRCHEM NOTE: SO2_Convolution_TensorProduct takes scalars lmax/mmax, not lists.
+        so2_convolution_class = (
+            SO2_Convolution_TensorProduct if self.use_tp_reparam else SO2_Convolution
+        )
+
+        self.so2_conv_1 = so2_convolution_class(
+            2 * self.sphere_channels,
+            self.hidden_channels,
+            self.lmax_list[0],  # FAIRCHEM ADAPTATION: Scalar, not list (single resolution)
+            self.mmax_list[0],  # FAIRCHEM ADAPTATION: Scalar, not list (single resolution)
+            self.mappingReduced,
+            internal_weights=(False if not self.use_m_share_rad else True),
+            edge_channels_list=(
+                self.edge_channels_list if not self.use_m_share_rad else None
+            ),
+            extra_m0_output_channels=extra_m0_output_channels,
+        )
+
+        # === EBDM-origin: Activation layer selection ===
+        if self.use_gate_act:
+            self.gate_act = GateActivation(
+                lmax=max(self.lmax_list),
+                mmax=max(self.mmax_list),
+                num_channels=self.hidden_channels,
+            )
+        elif self.use_sep_s2_act:
+            self.s2_act = SeparableS2Activation(
+                lmax=max(self.lmax_list),
+                mmax=max(self.mmax_list),
+                SO3_grid=self.SO3_grid,
+            )
+        else:
+            self.s2_act = S2Activation(
+                lmax=max(self.lmax_list),
+                mmax=max(self.mmax_list),
+                SO3_grid=self.SO3_grid,
+            )
+
+        self.so2_conv_2 = so2_convolution_class(
+            self.hidden_channels,
+            self.num_heads * self.attn_value_channels,
+            self.lmax_list[0],  # FAIRCHEM ADAPTATION: Scalar
+            self.mmax_list[0],  # FAIRCHEM ADAPTATION: Scalar
+            self.mappingReduced,
+            internal_weights=True,
+            edge_channels_list=None,
+            extra_m0_output_channels=self.num_heads if self.use_s2_act_attn else None,
+        )
+
+        # === EBDM-origin: Output projection layers ===
+        # FAIRCHEM ADAPTATION: Use SO3_Linear instead of SO3_LinearV2 (fairchem's version).
+        proj_hidden = self.num_heads * max(self.attn_value_channels // 2, 1)
+        if self.edge_prediction and self.output_channels_edges > 0:
+            self.proj_edges_1 = SO3_Linear(
+                self.num_heads * self.attn_value_channels,
+                proj_hidden,
+                lmax=self.lmax_list[0],
+            )
+            self.proj_edges_2 = SO3_Linear(
+                proj_hidden,
+                self.output_channels_edges,
+                lmax=self.lmax_list[0],
+            )
+        if self.node_prediction and self.output_channels_nodes > 0:
+            self.proj_nodes_1 = SO3_Linear(
+                self.num_heads * self.attn_value_channels,
+                proj_hidden,
+                lmax=self.lmax_list[0],
+            )
+            self.proj_nodes_2 = SO3_Linear(
+                proj_hidden,
+                self.output_channels_nodes,
+                lmax=self.lmax_list[0],
+            )
+
+    @staticmethod
+    def _squeeze_scalar_output(x: torch.Tensor) -> torch.Tensor:
+        if x.shape[1] == 1 and x.shape[2] == 1:
+            return x.squeeze(1).squeeze(-1)
+        if x.shape[2] == 1:
+            return x.squeeze(-1)
+        return x
+
+    def forward(self, data, emb):
+        """Forward pass for SO(2)-equivariant graph attention.
+
+        **FAIRCHEM ADAPTATION:** forward signature differs from EBDM.
+        - EBDM: forward(x: SO3_Embedding, atomic_numbers, edge_distance, edge_index)
+        - FAIRCHEM: forward(data: dict, emb: dict) via HeadInterface contract
+            - data: Contains atomic_numbers, pos, batch, etc. from Data object
+            - emb: Dict with node_embedding [N, (lmax+1)², C], edge_embedding [E, C_edge],
+                     edge_index [2, E], edge_distance_vec [E, 3]
+
+        Returns:
+            Dict[str, Dict[str, Tensor]]: Task-keyed predictions
+            - {edge_task_name: {"edge_pred": [E, 1]}} if edge_prediction=True
+            - {node_task_name: {"node_pred": [N, 1]}} if node_prediction=True
+        """
+        # === FAIRCHEM ADAPTATION: Extract emb dict components ===
+        # In EBDM, inputs are separate parameters; here they come bundled in emb dict
+        # from the backbone's forward output.
+        if "edge_embedding" not in emb:
+            raise ValueError(
+                "SO2EquivariantGraphAttentionNodeEdgePrediction requires "
+                "'edge_embedding' in emb. Set backbone output_edge_features=True."
+            )
+
+        edge_index = emb["edge_index"]
+        node_embedding = emb["node_embedding"]
+        edge_embedding = emb["edge_embedding"]
+        edge_distance_vec = emb["edge_distance_vec"]
+
+        num_edges = edge_index.shape[1]
+        num_nodes = node_embedding.shape[0]
+
+        # === EBDM-origin: Build edge messages ===
+        # Concatenate source and target node embeddings along feature dimension.
+        # This creates per-edge feature tensors for SO(2) convolution.
+        x_source = node_embedding[edge_index[0]]
+        x_target = node_embedding[edge_index[1]]
+        x_message_data = torch.cat((x_source, x_target), dim=2)
+
+        # === EBDM-origin: Build edge features ===
+        # Distance basis + optional atom identity embeddings.
+        # FAIRCHEM ADAPTATION: Extract distance channels from precomputed edge_embedding
+        # instead of receiving edge_distance as parameter. Backbone handles distance
+        # basis expansion.
+        x_edge = edge_embedding.narrow(1, 0, self.edge_distance_channels)
+        if self.use_atom_edge_embedding:
+            source_element = data["atomic_numbers"][edge_index[0]]
+            target_element = data["atomic_numbers"][edge_index[1]]
+            source_embedding = self.source_embedding(source_element)
+            target_embedding = self.target_embedding(target_element)
+            x_edge = torch.cat((x_edge, source_embedding, target_embedding), dim=1)
+
+        # === EBDM-origin: Rotation to edge-aligned frame ===
+        # Apply Wigner D rotation matrices to rotate node embeddings into edge-local frame
+        # where SO(2) equivariance is natural (edge aligned with z-axis).
+        # FAIRCHEM ADAPTATION: Fetch Wigner matrices from backbone using edge_distance_vec
+        # instead of using SO3_Embedding._rotate() method. Backbone computes rotations
+        # via Euler angles and Wigner D matrix generation.
+        wigner, wigner_inv = self.backbone._get_rotmat_and_wigner(
+            edge_distance_vec,
+            use_cuda_graph=self.backbone.use_cuda_graph_wigner
+            and "cuda" in get_device_for_local_rank()
+            and not self.training,
+        )
+        # FAIRCHEM ADAPTATION: Use torch.bmm instead of SO3_Embedding._rotate() method
+        x_message = torch.bmm(wigner, x_message_data)
+
+        # === EBDM-origin: m-share-rad radial weighting (optional) ===
+        # If use_m_share_rad=True, apply per-l radial weights to break redundancy.
+        # Each l gets shared radial weights across all m ∈ [-l, l] for that l.
+        # FAIRCHEM ADAPTATION: Use index_select on expand_index (l_harmonic mapping)
+        # to replicate per-l scalars across m channels. EBDM uses similar pattern
+        # internally.
+        if self.use_m_share_rad:
+            x_edge_weight = self.rad_func(x_edge)
+            x_edge_weight = x_edge_weight.view(
+                -1,
+                (max(self.lmax_list) + 1),
+                2 * self.sphere_channels,
+            )
+            x_edge_weight = torch.index_select(
+                x_edge_weight,
+                dim=1,
+                index=self.expand_index,
+            )
+            x_message = x_message * x_edge_weight
+
+        # === EBDM-origin: First SO(2) convolution ===
+        # Message features through SO(2) tensor-product convolution. If not using
+        # s2_act_attn, also outputs m=0 coefficients for attention weight computation.
+        if self.use_s2_act_attn:
+            x_message = self.so2_conv_1(x_message, x_edge)
+        else:
+            x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+
+        # === EBDM-origin: Activation between SO(2) convolutions ===
+        # Three options: GateActivation, SeparableS2Activation, or standard S2Activation.
+        # All are SO(3) equivariant nonlinearities preserving spherical harmonic structure.
+        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_s2_act_attn:
+            x_message = self.s2_act(x_message)
+        elif self.use_gate_act:
+            x_0_gating = x_0_extra.narrow(
+                1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels
+            )
+            x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+            x_message = self.gate_act(x_0_gating, x_message)
+        else:
+            if self.use_sep_s2_act:
+                x_0_gating = x_0_extra.narrow(
+                    1,
+                    x_alpha_num_channels,
+                    x_0_extra.shape[1] - x_alpha_num_channels,
+                )
+                x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
+                x_message = self.s2_act(x_0_gating, x_message)
+            else:
+                x_0_alpha = x_0_extra
+                x_message = self.s2_act(x_message)
+
+        # === EBDM-origin: Second SO(2) convolution ===
+        # Project to num_heads * attn_value_channels for attention computation.
+        if self.use_s2_act_attn:
+            x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
+        else:
+            x_message = self.so2_conv_2(x_message, x_edge)
+
+        # === EBDM-origin: Attention weight computation ===
+        # Compute per-head scalar attention weights from m=0 (scalar) coefficients.
+        if self.use_s2_act_attn:
+            alpha = x_0_extra
+        else:
+            x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
+            x_0_alpha = self.alpha_norm(x_0_alpha)
+            x_0_alpha = self.alpha_act(x_0_alpha)
+            alpha = torch.einsum("bik,ik->bi", x_0_alpha, self.alpha_dot)
+        # EBDM-origin: Softmax per target node (edge_index[1] groups edges by target).
+        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
+        alpha = alpha.view(alpha.shape[0], 1, self.num_heads, 1)
+        if self.alpha_dropout is not None:
+            alpha = self.alpha_dropout(alpha)
+
+        # === EBDM-origin: Attention weights × message vectors ===
+        # Reshape to separate num_heads dimension, apply attention, reshape back.
+        attn = x_message.view(
+            num_edges,
+            x_message.shape[1],
+            self.num_heads,
+            self.attn_value_channels,
+        )
+        attn = attn * alpha
+        x_message = attn.view(
+            num_edges,
+            attn.shape[1],
+            self.num_heads * self.attn_value_channels,
+        )
+
+        # === EBDM-origin: Rotation back to global frame ===
+        # Apply inverse Wigner matrix to map from edge-aligned back to global frame.
+        x_message = torch.bmm(wigner_inv, x_message)
+
+        # === FAIRCHEM ADAPTATION: Task-keyed output dict ===
+        # EBDM returns (out_embedding_nodes, out_embedding_edges) tuple.
+        # FAIRCHEM returns {task_name: {pred_key: tensor}} dict to support
+        # multi-task loss routing in MLIP framework.
+        output = {}
+
+        # === EBDM-origin: Edge prediction (if enabled) ===
+        if self.edge_prediction and self.output_channels_edges > 0:
+            out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
+            out_embedding_edges = out_embedding_edges.narrow(
+                1, self.num_irreps_passed, 2 * self.out_degree + 1
+            )
+            edge_pred = self._squeeze_scalar_output(out_embedding_edges)
+            if gp_utils.initialized():
+                edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
+            # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key
+            output[self.edge_task_name] = {"edge_pred": edge_pred}
+
+        # === EBDM-origin: Aggregate edge messages to nodes ===
+        # Sum all incoming edge messages for each target node. This is the key
+        # neighbor-aggregation step in graph neural networks.
+        # FAIRCHEM ADAPTATION: Use torch_geometric.utils.scatter instead of
+        # SO3_Embedding._reduce_edge() method. Scatter sums edge messages [E, F]
+        # by target node index [E] to produce node messages [N, F].
+        x_nodes = torch_geometric.utils.scatter(
+            x_message,
+            edge_index[1],
+            dim=0,
+            dim_size=num_nodes,
+            reduce="sum",
+        )
+
+        # === EBDM-origin: Node prediction (if enabled) ===
+        if self.node_prediction and self.output_channels_nodes > 0:
+            out_embedding_nodes = self.proj_nodes_2(self.proj_nodes_1(x_nodes))
+            out_embedding_nodes = out_embedding_nodes.narrow(
+                1, self.num_irreps_passed, 2 * self.out_degree + 1
+            )
+            node_pred = self._squeeze_scalar_output(out_embedding_nodes)
+            if gp_utils.initialized():
+                node_pred = gp_utils.gather_from_model_parallel_region(node_pred, dim=0)
+            # FAIRCHEM ADAPTATION: Nested dict with node_task_name key
+            output[self.node_task_name] = {"node_pred": node_pred}
+
+        return output
+
+
+class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):
+    """Backward-compatible alias for existing configs."""
+
+
 
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone: eSCNMDBackbone) -> None:
