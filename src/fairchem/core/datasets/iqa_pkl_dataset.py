@@ -25,6 +25,8 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
 
 
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
+    if x is None:
+        return None
     return x * 27.211386245988
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
