@@ -420,7 +420,7 @@
 #     rmsd: ${normalizer_rmsd}
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: dipole_vector_attention
+  name: dipole_vector
   level: atom
   property: pred
   datasets: ${dataset_list}
@@ -435,9 +435,9 @@
   out_spec:
     dim: [3]
     dtype: float32
-    dipole_intra:
-        prediction_key: pred
-        label_key: dipole_vector_attention
+    dipole_vector:
+      prediction_key: pred
+      label_key: dipole_vector
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
