@@ -1550,13 +1550,16 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # multi-task loss routing in MLIP framework.
         output = {}
 
+        distance_term = edge_distance_vec.norm(dim=1)
+        #print(distance_term)
+
         # === EBDM-origin: Edge prediction (if enabled) ===
         if self.edge_prediction and self.output_channels_edges > 0:
             out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
             out_embedding_edges = out_embedding_edges.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
             )
-            edge_pred = self._squeeze_scalar_output(out_embedding_edges)
+            edge_pred = self._squeeze_scalar_output(out_embedding_edges) + (1 / distance_term)
             if gp_utils.initialized():
                 edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
             # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key
