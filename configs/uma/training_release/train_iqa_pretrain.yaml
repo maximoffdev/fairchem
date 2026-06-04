@@ -54,26 +54,26 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_kinetic: 0.0
-normalizer_rmsd_iqa_kinetic: 1.0
-normalizer_mean_iqa_vne: 0.0
-normalizer_rmsd_iqa_vne: 1.0
-normalizer_mean_iqa_vee: 0.0
-normalizer_rmsd_iqa_vee: 1.0
-normalizer_mean_iqa_vee_c: 0.0
-normalizer_rmsd_iqa_vee_c: 1.0
-normalizer_mean_iqa_vee_x: 0.0
-normalizer_rmsd_iqa_vee_x: 1.0
+normalizer_mean_iqa_kinetic: 1000.12
+normalizer_rmsd_iqa_kinetic: 2022.36
+normalizer_mean_iqa_vne: -2386.82
+normalizer_rmsd_iqa_vne: 4815.85
+normalizer_mean_iqa_vee: 392.778
+normalizer_rmsd_iqa_vee: 772.831
+normalizer_mean_iqa_vee_c: 493.686
+normalizer_rmsd_iqa_vee_c: 909.29
+normalizer_mean_iqa_vee_x: -100.909
+normalizer_rmsd_iqa_vee_x: 140.044
 normalizer_mean_iqa_intra_a: 0.0
 normalizer_rmsd_iqa_intra_a: 1.0
-normalizer_mean_iqa_inter_ab: 0.0
-normalizer_rmsd_iqa_inter_ab: 1.0
+normalizer_mean_iqa_inter_ab: -0.69783
+normalizer_rmsd_iqa_inter_ab: 2.75929
 iqa_intra_a_coef: 1.0
-iqa_kinetic_coef: 0.2
-iqa_vne_coef: 0.2
-iqa_vee_coef: 0.2
-iqa_vee_c_coef: 0.2
-iqa_vee_x_coef: 0.2
+iqa_kinetic_coef: 1.0
+iqa_vne_coef: 1.0
+iqa_vee_coef: 1.0
+iqa_vee_c_coef: 1.0
+iqa_vee_x_coef: 1.0
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
 
@@ -125,6 +125,22 @@ heads:
     predict_aggregate: true
     edge_prediction: true
     edge_task_name: iqa_inter_ab
+    term_normalizers:
+      iqa_kinetic:
+        mean: ${normalizer_mean_iqa_kinetic}
+        rmsd: ${normalizer_rmsd_iqa_kinetic}
+      iqa_vne:
+        mean: ${normalizer_mean_iqa_vne}
+        rmsd: ${normalizer_rmsd_iqa_vne}
+      iqa_vee:
+        mean: ${normalizer_mean_iqa_vee}
+        rmsd: ${normalizer_rmsd_iqa_vee}
+      iqa_vee_c:
+        mean: ${normalizer_mean_iqa_vee_c}
+        rmsd: ${normalizer_rmsd_iqa_vee_c}
+      iqa_vee_x:
+        mean: ${normalizer_mean_iqa_vee_x}
+        rmsd: ${normalizer_rmsd_iqa_vee_x}
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner

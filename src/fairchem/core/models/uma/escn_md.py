@@ -103,6 +103,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         radius_pbc_version: int = 1,
         always_use_pbc: bool = True,
         output_edge_features: bool = False,
+        term_element_refs: dict[str, list[float]] | None = None,
     ) -> None:
         super().__init__()
         self.max_num_elements = max_num_elements
@@ -1699,6 +1700,8 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
         out_degree: int = 0,
         lmax_list: list[int] | None = None,
         mmax_list: list[int] | None = None,
+        term_normalizers: dict[str, dict[str, float]] | None = None,
+        term_element_refs: dict[str, list[float]] | None = None,
         **kwargs,
     ) -> None:
         # Create parent with node_prediction enabled but single-node proj_nodes_2
@@ -1725,6 +1728,47 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
 
         if self.aggregate_name in self.term_names:
             raise ValueError("aggregate_name must not overlap with term_names")
+        self._use_term_normalizers = False
+        if term_normalizers is not None:
+            missing_terms = [term for term in self.term_names if term not in term_normalizers]
+            extra_terms = [term for term in term_normalizers.keys() if term not in self.term_names]
+            if missing_terms or extra_terms:
+                raise ValueError(
+                    f"term_normalizers mismatch. Missing={missing_terms}, extra={extra_terms}"
+                )
+            for term in self.term_names:
+                term_norm = term_normalizers[term]
+                if "mean" not in term_norm or "rmsd" not in term_norm:
+                    raise ValueError(
+                        f"term_normalizers[{term}] must include mean and rmsd"
+                    )
+                self.register_buffer(
+                    f"term_mean_{term}",
+                    torch.tensor(term_norm["mean"], dtype=torch.get_default_dtype()),
+                )
+                self.register_buffer(
+                    f"term_rmsd_{term}",
+                    torch.tensor(term_norm["rmsd"], dtype=torch.get_default_dtype()),
+                )
+            self._use_term_normalizers = True
+
+        self._use_term_element_refs = False
+        if term_element_refs is not None:
+            if term_normalizers is None:
+                raise ValueError("term_element_refs requires term_normalizers to denormalize terms")
+            missing_terms = [term for term in self.term_names if term not in term_element_refs]
+            extra_terms = [term for term in term_element_refs.keys() if term not in self.term_names]
+            if missing_terms or extra_terms:
+                raise ValueError(
+                    f"term_element_refs mismatch. Missing={missing_terms}, extra={extra_terms}"
+                )
+            for term in self.term_names:
+                term_refs = term_element_refs[term]
+                self.register_buffer(
+                    f"term_elem_refs_{term}",
+                    torch.tensor(term_refs, dtype=torch.get_default_dtype()),
+                )
+            self._use_term_element_refs = True
 
         # compute proj_hidden same as in parent
         proj_hidden = self.num_heads * max(self.attn_value_channels // 2, 1)
@@ -1885,7 +1929,25 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             component_preds.append(node_pred)
 
         if self.predict_aggregate:
-            aggregate_pred = torch.stack(component_preds, dim=0).sum(dim=0)
+            if self._use_term_normalizers:
+                aggregate_pred = None
+                for term, node_pred in zip(self.term_names, component_preds):
+                    term_mean = getattr(self, f"term_mean_{term}")
+                    term_rmsd = getattr(self, f"term_rmsd_{term}")
+                    term_physical = node_pred * term_rmsd + term_mean
+                    if self._use_term_element_refs:
+                        term_refs = getattr(self, f"term_elem_refs_{term}")
+                        term_refs = term_refs[data["atomic_numbers"]].to(term_physical.dtype)
+                        if term_physical.ndim == 2 and term_physical.shape[1] == 1:
+                            term_refs = term_refs.view(-1, 1)
+                        term_physical = term_physical + term_refs
+                    aggregate_pred = (
+                        term_physical
+                        if aggregate_pred is None
+                        else aggregate_pred + term_physical
+                    )
+            else:
+                aggregate_pred = torch.stack(component_preds, dim=0).sum(dim=0)
             outputs[self.aggregate_name] = {"node_pred": aggregate_pred}
 
         return outputs

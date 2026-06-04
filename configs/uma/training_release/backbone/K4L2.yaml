@@ -35,3 +35,4 @@ cs_emb_grad: True
 dataset_list: ${dataset_list}
 output_edge_features: True  # Required for edge-level IQA predictions
 #activation_checkpointing: True  # Save 50-70% memory by recomputing activations during backward pass
+term_element_refs: ${element_refs}
