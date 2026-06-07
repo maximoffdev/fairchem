@@ -13,7 +13,7 @@ mem_gb: "0"
 cpus_per_task: 4 #4 ursprünglich
 timeout_hr: "48" #48 ursprünglich
 partition: clara
-max_atoms: 280       #360 ursprünglich
+max_atoms: 360       #360 ursprünglich
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 32
 cutoff_radius: 7.0   # Å; matched to K10L4 backbone default, #7.0 default
