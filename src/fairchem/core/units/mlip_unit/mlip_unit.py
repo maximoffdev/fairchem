@@ -294,13 +294,16 @@ def compute_loss(
             mult_mask=mult_mask,
             natoms=batch.natoms,
         )
-        # Denormalized loss for logging (in physical units)
+        # Denormalized loss for logging (in physical units, without coefficient)
         denorm_loss_dict[task.name] = task.loss_fn(
             task.normalizer.denorm(pred_for_task.detach()),
             task.normalizer.denorm(target.detach()),
             mult_mask=mult_mask,
             natoms=batch.natoms,
         )
+        coeff = getattr(task.loss_fn, "coefficient", 1.0)
+        if coeff != 0:
+            denorm_loss_dict[task.name] = denorm_loss_dict[task.name] / coeff
 
     # Sanity check to make sure the compute graph is correct.
     for lc in loss_dict.values():

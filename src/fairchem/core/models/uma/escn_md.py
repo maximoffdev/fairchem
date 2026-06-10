@@ -1773,16 +1773,21 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
         # compute proj_hidden same as in parent
         proj_hidden = self.num_heads * max(self.attn_value_channels // 2, 1)
 
-        # replace parent proj_nodes_2 with per-term modules
-        # keep proj_nodes_1 shared
+        # disable shared parent layers; use per-term two-layer stacks instead
+        self.proj_nodes_1 = None
+        self.proj_nodes_2 = None
+
+        self.proj_nodes_1_terms = nn.ModuleDict()
         self.proj_nodes_2_terms = nn.ModuleDict()
         for term in self.term_names:
+            self.proj_nodes_1_terms[term] = SO3_Linear(
+                self.num_heads * self.attn_value_channels,
+                proj_hidden,
+                lmax=self.lmax_list[0],
+            )
             self.proj_nodes_2_terms[term] = SO3_Linear(
                 proj_hidden, 1, lmax=self.lmax_list[0]
             )
-
-        # disable the single proj_nodes_2 to avoid accidental use
-        self.proj_nodes_2 = None
 
     def forward(self, data, emb):
         # reuse parent's forward up to x_nodes creation
@@ -1914,10 +1919,10 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             reduce="sum",
         )
 
-        # per-term projections
-        proj_nodes = self.proj_nodes_1(x_nodes)
+        # per-term projections (each term has its own two-layer stack)
         component_preds: list[torch.Tensor] = []
         for term in self.term_names:
+            proj_nodes = self.proj_nodes_1_terms[term](x_nodes)
             out_embedding_nodes_term = self.proj_nodes_2_terms[term](proj_nodes)
             out_embedding_nodes_term = out_embedding_nodes_term.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
