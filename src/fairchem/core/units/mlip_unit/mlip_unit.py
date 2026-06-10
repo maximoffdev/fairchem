@@ -232,7 +232,7 @@ def get_output_masks(
 
 def compute_loss(
     tasks: Sequence[Task], predictions: dict[str, torch.Tensor], batch: AtomicData
-) -> dict[str, float]:
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Compute loss given a sequence of tasks
 
     Args:
@@ -241,7 +241,7 @@ def compute_loss(
         batch: data batch
 
     Returns:
-        dictionary of losses for each task
+        tuple of (normalized loss dict for backward, denormalized loss dict for logging)
     """
 
     batch_size = batch.natoms.numel()
@@ -251,6 +251,7 @@ def compute_loss(
     output_masks = get_output_masks(batch, tasks)
 
     loss_dict = {}
+    denorm_loss_dict = {}
     for task in tasks:
         # TODO this might be a very expensive clone
         target = batch[task.name].clone()
@@ -293,12 +294,19 @@ def compute_loss(
             mult_mask=mult_mask,
             natoms=batch.natoms,
         )
+        # Denormalized loss for logging (in physical units)
+        denorm_loss_dict[task.name] = task.loss_fn(
+            task.normalizer.denorm(pred_for_task.detach()),
+            task.normalizer.denorm(target.detach()),
+            mult_mask=mult_mask,
+            natoms=batch.natoms,
+        )
 
     # Sanity check to make sure the compute graph is correct.
     for lc in loss_dict.values():
         assert hasattr(lc, "grad_fn")
 
-    return loss_dict
+    return loss_dict, denorm_loss_dict
 
 
 def compute_metrics(
@@ -707,7 +715,7 @@ class MLIPTrainEvalUnit(
                 with record_function("forward"):
                     pred = self.model.forward(batch_on_device)
                 with record_function("compute_loss"):
-                    loss_dict = compute_loss(self.tasks, pred, batch_on_device)
+                    loss_dict, denorm_loss_dict = compute_loss(self.tasks, pred, batch_on_device)
             scalar_loss = sum(loss_dict.values())
             self.optimizer.zero_grad()
             with record_function("backward"):
@@ -762,7 +770,7 @@ class MLIPTrainEvalUnit(
             num_atoms_local = data.natoms.sum().item()
             num_samples_local = data.natoms.numel()
             log_dict = {
-                "train/loss": scalar_loss.item(),
+                "train/loss": sum(denorm_loss_dict.values()).item(),
                 "train/lr": self.scheduler.get_lr()[0],
                 "train/step": step,
                 "train/epoch": epoch,
@@ -776,7 +784,7 @@ class MLIPTrainEvalUnit(
                 "train/num_samples_on_rank": num_samples_local,
             }
 
-            for task_name, task_loss in loss_dict.items():
+            for task_name, task_loss in denorm_loss_dict.items():
                 log_dict[f"train/loss/{task_name}"] = task_loss.item()
 
             if self.logger:
@@ -1004,12 +1012,12 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             self.total_runtime += time.time() - t0
 
         # compute the loss
-        loss_dict = compute_loss(self.tasks, preds, data)
-        total_loss = sum(loss_dict.values())
+        loss_dict, denorm_loss_dict = compute_loss(self.tasks, preds, data)
+        total_loss = sum(denorm_loss_dict.values())
         self.total_loss_metrics += Metrics(metric=total_loss, total=total_loss, numel=1)
 
         for task in self.tasks:
-            loss_value = loss_dict[task.name].item()
+            loss_value = denorm_loss_dict[task.name].item()
             self.running_loss_metrics[task.name] += Metrics(
                 metric=loss_value, total=loss_value, numel=1
             )

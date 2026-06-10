@@ -141,6 +141,12 @@ heads:
       iqa_vee_x:
         mean: ${normalizer_mean_iqa_vee_x}
         rmsd: ${normalizer_rmsd_iqa_vee_x}
+    term_element_refs:
+      iqa_kinetic: ${element_refs.iqa_kinetic}
+      iqa_vne: ${element_refs.iqa_vne}
+      iqa_vee: ${element_refs.iqa_vee}
+      iqa_vee_c: ${element_refs.iqa_vee_c}
+      iqa_vee_x: ${element_refs.iqa_vee_x}
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
