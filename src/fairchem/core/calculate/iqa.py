@@ -67,6 +67,35 @@ def _get_graph_params(
 
 
 
+def _get_dim(task: Any) -> int:
+    d = task.out_spec.get("dim", [1])
+    return d[0] if isinstance(d, (list, tuple)) and d else 1
+
+
+def _slice_by_property(
+    pred: dict[str, torch.Tensor],
+    tasks: list,
+    natoms: int,
+    nedges: int,
+) -> dict[str, torch.Tensor]:
+    tasks_by_prop: dict[str, list] = {}
+    for t in tasks:
+        tasks_by_prop.setdefault(t.property, []).append(t)
+
+    out: dict[str, torch.Tensor] = {}
+    for prop, group in tasks_by_prop.items():
+        full = pred.get(prop)
+        if full is None:
+            continue
+        offset = 0
+        for t in group:
+            count = natoms if t.level == "atom" else nedges
+            size = count * _get_dim(t)
+            out[t.name] = full[offset : offset + size]
+            offset += size
+    return out
+
+
 def _resolve_indices(
     dataset: IQAPKLDataset, input_path: Path, max_items: int | None
 ) -> list[int]:
@@ -131,10 +160,12 @@ def predict_iqa_pkl(
         batch = data_list_collater([data])
         pred = predict_unit.predict(batch)
 
-        predictions: dict[str, list[float]] = {}
-        for task in predict_unit.dataset_to_tasks[task_name]:
-            if task.property in pred:
-                predictions[task.name] = _to_list(pred[task.property])
+        natoms = int(data.natoms.item())
+        nedges = int(data.nedges.item())
+        sliced = _slice_by_property(
+            pred, predict_unit.dataset_to_tasks[task_name], natoms, nedges
+        )
+        predictions = {k: _to_list(v) for k, v in sliced.items()}
 
         entry = {
             "index": idx,
@@ -193,10 +224,12 @@ class IQACalculator(Calculator):
         batch = data_list_collater([data])
         pred = self.predictor.predict(batch)
 
-        self.results = {}
-        for task in self.predictor.dataset_to_tasks[self.task_name]:
-            if task.property in pred:
-                self.results[task.name] = pred[task.property].detach().cpu().numpy()
+        natoms = int(data.natoms.item())
+        nedges = int(data.nedges.item())
+        sliced = _slice_by_property(
+            pred, self.predictor.dataset_to_tasks[self.task_name], natoms, nedges
+        )
+        self.results = {k: v.detach().cpu().numpy() for k, v in sliced.items()}
 
         self.results["edge_index"] = data.edge_index.detach().cpu().t().numpy()
         self.results["atomic_numbers"] = data.atomic_numbers.detach().cpu().numpy()
