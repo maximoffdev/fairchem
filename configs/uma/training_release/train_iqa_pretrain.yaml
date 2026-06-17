@@ -54,12 +54,12 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_kinetic: 1000.12
-normalizer_rmsd_iqa_kinetic: 2022.36
-normalizer_mean_iqa_vne: -2386.82
-normalizer_rmsd_iqa_vne: 4815.85
-normalizer_mean_iqa_vee: 392.778
-normalizer_rmsd_iqa_vee: 772.831
+normalizer_mean_iqa_kinetic: 2.60388  # old: 1000.12
+normalizer_rmsd_iqa_kinetic: 16.0932  # old: 2022.36
+normalizer_mean_iqa_vne: -27.7423  # old: -2386.82
+normalizer_rmsd_iqa_vne: 89.9088  # old: 4815.85
+normalizer_mean_iqa_vee: 32.162  # old: 392.778
+normalizer_rmsd_iqa_vee: 73.7236  # old: 772.831
 # normalizer_mean_iqa_vee_c: 493.686
 # normalizer_rmsd_iqa_vee_c: 909.29
 # normalizer_mean_iqa_vee_x: -100.909
