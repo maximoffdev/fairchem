@@ -9,40 +9,53 @@ from __future__ import annotations
 
 import copy
 import logging
-import multiprocessing as mp
+import math
 import os
 import random
+import sys
 from collections import defaultdict
 from contextlib import nullcontext
-from functools import wraps
-from typing import TYPE_CHECKING, Protocol, Sequence
+from functools import cached_property, wraps
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 import hydra
 import numpy as np
+import ray
 import torch
+import torch.distributed as dist
+from ray import remote
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from torch.distributed.elastic.utils.distributed import get_free_port
 from torchtnt.framework import PredictUnit, State
 
 from fairchem.core.common import gp_utils
 from fairchem.core.common.distutils import (
     CURRENT_DEVICE_TYPE_STR,
+    assign_device_for_local_rank,
     get_device_for_local_rank,
+    setup_env_local_multi_gpu,
 )
-from fairchem.core.datasets.atomic_data import AtomicData
+from fairchem.core.components.batch_server import get_app_handle_with_retry
+from fairchem.core.datasets.atomic_data import AtomicData, warn_if_upcasting
+from fairchem.core.models.uma.nn.execution_backends import (
+    maybe_update_settings_backend,
+)
 from fairchem.core.units.mlip_unit import InferenceSettings
-from fairchem.core.units.mlip_unit.inference.client_websocket import (
-    SyncMLIPInferenceWebSocketClient,
-)
-from fairchem.core.units.mlip_unit.inference.inference_server_ray import (
-    MLIPInferenceServerWebSocket,
+from fairchem.core.units.mlip_unit.mlip_unit import OutputSpec, Task
+from fairchem.core.units.mlip_unit.single_atom_patch import (
+    single_atom_prediction_from_lookup,
 )
 from fairchem.core.units.mlip_unit.utils import (
+    get_backbone_class_from_checkpoint,
     load_inference_model,
     tf32_context_manager,
 )
 
 if TYPE_CHECKING:
-    from fairchem.core.units.mlip_unit.mlip_unit import Task
+    from ase import Atoms
+    from ray.serve.handle import DeploymentHandle
+
+    from fairchem.core.units.mlip_unit.api.inference import MLIPInferenceCheckpoint
 
 
 def collate_predictions(predict_fn):
@@ -52,8 +65,6 @@ def collate_predictions(predict_fn):
     ):
         # Get the full prediction dictionary from the original predict method
         preds = predict_fn(predict_unit, data, undo_element_references)
-        if gp_utils.initialized():
-            data.batch = data.batch_full
         collated_preds = defaultdict(list)
         edge_batch = None
         for i, dataset in enumerate(data.dataset):
@@ -91,6 +102,8 @@ def collate_predictions(predict_fn):
 class MLIPPredictUnitProtocol(Protocol):
     def predict(self, data: AtomicData, undo_element_references: bool) -> dict: ...
 
+    def validate_atoms_data(self, atoms: Atoms, task_name: str) -> None: ...
+
     @property
     def dataset_to_tasks(self) -> dict[str, list]: ...
 
@@ -104,84 +117,118 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
         inference_settings: InferenceSettings | None = None,
         seed: int = 41,
         atom_refs: dict | None = None,
+        form_elem_refs: dict | None = None,
+        assert_on_nans: bool = False,
     ):
         super().__init__()
         os.environ[CURRENT_DEVICE_TYPE_STR] = device
 
         self.set_seed(seed)
-        # note these are different from the element references used for model training
-        self.atom_refs = (
-            {task.replace("_elem_refs", ""): refs for task, refs in atom_refs.items()}
-            if atom_refs is not None
-            else {}
-        )
+        self._setup_refs(atom_refs, form_elem_refs)
 
         if inference_settings is None:
             inference_settings = InferenceSettings()
-        if overrides is None:
-            overrides = {}
-        if "backbone" not in overrides:
-            overrides["backbone"] = {}
-        # always disable always_use_pbc for inference
-        overrides["backbone"]["always_use_pbc"] = False
-        if inference_settings.activation_checkpointing is not None:
-            overrides["backbone"]["activation_checkpointing"] = (
-                inference_settings.activation_checkpointing
-            )
-        if inference_settings.wigner_cuda is not None:
-            overrides["backbone"]["use_cuda_graph_wigner"] = (
-                inference_settings.wigner_cuda
-            )
-        if inference_settings.external_graph_gen is not None:
-            overrides["backbone"][
-                "otf_graph"
-            ] = not inference_settings.external_graph_gen
 
-        if inference_settings.internal_graph_gen_version is not None:
-            overrides["backbone"]["radius_pbc_version"] = (
-                inference_settings.internal_graph_gen_version
+        self.inference_settings = inference_settings
+        self._setup_threads(inference_settings)
+
+        if self.inference_settings.wigner_cuda:
+            logging.warning(
+                "The wigner_cuda flag is deprecated and will be removed in future versions."
             )
 
-        self.model, checkpoint = load_inference_model(
-            inference_model_path, use_ema=True, overrides=overrides
+        # Load checkpoint first to get model type
+        checkpoint = torch.load(
+            inference_model_path, map_location="cpu", weights_only=False
         )
-        tasks = [
-            hydra.utils.instantiate(task_config)
-            for task_config in checkpoint.tasks_config
-        ]
-        self.tasks = {t.name: t for t in tasks}
 
-        self._dataset_to_tasks = get_dataset_to_tasks_map(self.tasks.values())
-        assert set(self._dataset_to_tasks.keys()).issubset(
-            set(self.model.module.backbone.dataset_list)
-        ), "Datasets in tasks is not a strict subset of datasets in backbone."
-        assert device in ["cpu", "cuda"], "device must be either 'cpu' or 'cuda'"
+        # if the model is uma-s and the execution mode is not explicitly set, default to the optimized uma-s gpu execution mode
+        self.inference_settings = maybe_update_settings_backend(
+            self.inference_settings, checkpoint.model_config
+        )
 
-        self.device = get_device_for_local_rank() if device == "cuda" else "cpu"
+        # Build model-specific overrides
+        final_overrides = self._build_overrides_from_settings(
+            checkpoint, overrides, self.inference_settings
+        )
+
+        # Set default dtype during model construction so that non-persistent
+        # buffers (SO3_Grid matrices, CoefficientMapping) are created at the
+        # requested precision rather than being cast from float32 later.
+        prev_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(self.inference_settings.base_precision_dtype)
+
+        try:
+            # Load model with overrides, passing pre-loaded checkpoint
+            self.model, checkpoint = load_inference_model(
+                inference_model_path,
+                use_ema=True,
+                overrides=final_overrides,
+                preloaded_checkpoint=checkpoint,
+            )
+
+            # Model sets up tasks
+            self.model.module.setup_tasks(checkpoint.tasks_config)
+        finally:
+            torch.set_default_dtype(prev_dtype)
+
+        # Get backbone's default untrained tasks (if supported and enabled)
+        default_backbone_tasks = []
+        if self.inference_settings.auto_add_default_untrained_tasks:
+            backbone = self.model.module.backbone
+            if hasattr(backbone, "get_default_untrained_tasks"):
+                default_backbone_tasks = backbone.get_default_untrained_tasks(
+                    self.model.module.tasks,
+                    self.inference_settings,
+                )
+
+        # Create explicitly requested untrained tasks
+        untrained_tasks = self._create_untrained_tasks(
+            self.inference_settings, self.model.module.tasks
+        )
+
+        explicit_task_names = {t.name for t in untrained_tasks}
+        checkpoint_task_names = set(self.model.module.tasks.keys())
+
+        for task in default_backbone_tasks:
+            if (
+                task.name not in explicit_task_names
+                and task.name not in checkpoint_task_names
+            ):
+                untrained_tasks.append(task)
+
+        if untrained_tasks:
+            logging.info(
+                f"Adding {len(untrained_tasks)} untrained task(s): "
+                f"{[t.name for t in untrained_tasks]}"
+            )
+            self.model.module.add_tasks(untrained_tasks)
+
+        self._setup_device(device)
 
         self.model.eval()
-
         self.lazy_model_intialized = False
-        self.inference_mode = inference_settings
+        self.assert_on_nans = assert_on_nans
+        self._warned_upcast = False
 
-        # store composition embedding of system the model was merged on
-        self.merged_on = None
-
-        if self.direct_forces:
+        if self.model.module.backbone.regress_config.direct_forces:
             logging.warning(
-                "This is a direct-force model. Direct force predictions may lead to discontinuities in the potential "
-                "energy surface and energy conservation errors."
+                "This is a direct-force model. Direct force predictions may lead to "
+                "discontinuities in the potential energy surface and energy conservation errors."
             )
-
-    @property
-    def direct_forces(self) -> bool:
-        return self.model.module.backbone.direct_forces
 
     @property
     def dataset_to_tasks(self) -> dict[str, list]:
-        return self._dataset_to_tasks
+        return self.model.module.dataset_to_tasks
 
-    def set_seed(self, seed: int):
+    @property
+    def tasks(self) -> dict:
+        return self.model.module.tasks
+
+    def set_seed(self, seed: int) -> None:
+        """
+        Initialize random seeds.
+        """
         logging.debug(f"Setting random seed to {seed}")
         self._seed = seed
         random.seed(seed)
@@ -189,136 +236,388 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+    def _setup_refs(self, atom_refs: dict | None, form_elem_refs: dict | None) -> None:
+        """
+        Setup element references.
+        """
+        self.atom_refs = (
+            {task.replace("_elem_refs", ""): refs for task, refs in atom_refs.items()}
+            if atom_refs
+            else {}
+        )
+        self.form_elem_refs = form_elem_refs or {}
+
+    def _setup_threads(self, settings: InferenceSettings) -> None:
+        """
+        Configure thread settings.
+        """
+        if settings.torch_num_threads is not None:
+            torch.set_num_threads(settings.torch_num_threads)
+            torch.set_num_interop_threads(settings.torch_num_threads)
+
+    def _setup_device(self, device: str) -> None:
+        """
+        Setup inference device.
+        """
+        assert device in ["cpu", "cuda"], "device must be either 'cpu' or 'cuda'"
+        self.device = get_device_for_local_rank() if device == "cuda" else "cpu"
+
+    def _build_overrides_from_settings(
+        self,
+        checkpoint: MLIPInferenceCheckpoint,
+        user: dict | None,
+        settings: InferenceSettings,
+    ) -> dict:
+        """Build backbone config overrides by delegating to model-specific logic."""
+        overrides = {} if user is None else dict(user)
+        if "backbone" not in overrides:
+            overrides["backbone"] = {}
+
+        # Delegate to model-specific classmethod
+        backbone_cls = get_backbone_class_from_checkpoint(checkpoint)
+        backbone_overrides = backbone_cls.build_inference_settings(settings)
+
+        overrides["backbone"].update(backbone_overrides)
+
+        # User overrides take precedence
+        if user is not None and "backbone" in user:
+            overrides["backbone"].update(user["backbone"])
+
+        return overrides
+
+    def _create_untrained_tasks(
+        self,
+        settings: InferenceSettings,
+        checkpoint_tasks: dict[str, Task],
+    ) -> list[Task]:
+        """
+        Generate Task objects for untrained derivative properties.
+
+        For each requested property+dataset combination:
+        1. Verify an energy task exists for that dataset
+        2. Create a new Task with:
+           - inference_only=True (exclude from training/eval)
+           - Normalizer copied from energy task
+           - element_references=None (derivatives don't use elem refs)
+           - Appropriate out_spec for the property type
+
+        Args:
+            settings: InferenceSettings with compute_untrained_* flags
+            checkpoint_tasks: Dictionary of Task objects from checkpoint
+
+        Returns:
+            List of Task objects for untrained properties
+        """
+        untrained_tasks = []
+        energy_task_by_dataset = {}
+
+        for task in checkpoint_tasks.values():
+            if task.property == "energy":
+                for dataset in task.datasets:
+                    energy_task_by_dataset[dataset] = task
+
+        # Generate forces tasks
+        for dataset in settings.predict_untrained_forces:
+            if dataset not in energy_task_by_dataset:
+                logging.warning(
+                    f"Cannot create forces task for dataset '{dataset}': "
+                    f"no energy task found. Skipping."
+                )
+                continue
+
+            energy_task = energy_task_by_dataset[dataset]
+            # Infer task name prefix from energy task naming convention
+            task_prefix = "" if energy_task.name == "energy" else f"{dataset}_"
+            untrained_tasks.append(
+                Task(
+                    name=f"{task_prefix}forces",
+                    level="atom",
+                    property="forces",
+                    out_spec=OutputSpec(
+                        dim=[3], dtype=self.inference_settings.base_precision_dtype
+                    ),
+                    normalizer=energy_task.normalizer,  # Copy from energy
+                    datasets=[dataset],
+                    loss_fn=None,
+                    element_references=None,  # Forces are derivatives, no elem refs
+                    metrics=[],
+                    train_on_free_atoms=True,
+                    eval_on_free_atoms=True,
+                    inference_only=True,  # KEY: Skip training/eval
+                )
+            )
+
+        # Generate stress tasks
+        for dataset in settings.predict_untrained_stress:
+            if dataset not in energy_task_by_dataset:
+                logging.warning(
+                    f"Cannot create stress task for dataset '{dataset}': "
+                    f"no energy task found. Skipping."
+                )
+                continue
+
+            energy_task = energy_task_by_dataset[dataset]
+            # Infer task name prefix from energy task naming convention
+            task_prefix = "" if energy_task.name == "energy" else f"{dataset}_"
+            untrained_tasks.append(
+                Task(
+                    name=f"{task_prefix}stress",
+                    level="system",
+                    property="stress",
+                    out_spec=OutputSpec(
+                        dim=[1, 9], dtype=self.inference_settings.base_precision_dtype
+                    ),
+                    normalizer=energy_task.normalizer,
+                    datasets=[dataset],
+                    loss_fn=None,
+                    element_references=None,
+                    metrics=[],
+                    train_on_free_atoms=True,
+                    eval_on_free_atoms=True,
+                    inference_only=True,
+                )
+            )
+
+        # Generate hessian tasks
+        for dataset in settings.predict_untrained_hessian:
+            if dataset not in energy_task_by_dataset:
+                logging.warning(
+                    f"Cannot create hessian task for dataset '{dataset}': "
+                    f"no energy task found. Skipping."
+                )
+                continue
+
+            energy_task = energy_task_by_dataset[dataset]
+            # Infer task name prefix from energy task naming convention
+            task_prefix = "" if energy_task.name == "energy" else f"{dataset}_"
+            untrained_tasks.append(
+                Task(
+                    name=f"{task_prefix}hessian",
+                    level="system",
+                    property="hessian",
+                    out_spec=OutputSpec(
+                        dim=[None, None],
+                        dtype=self.inference_settings.base_precision_dtype,
+                    ),  # [N*3, N*3]
+                    normalizer=energy_task.normalizer,
+                    datasets=[dataset],
+                    loss_fn=None,
+                    element_references=None,
+                    metrics=[],
+                    train_on_free_atoms=True,
+                    eval_on_free_atoms=True,
+                    inference_only=True,
+                )
+            )
+
+        return untrained_tasks
+
     def move_to_device(self):
         self.model.to(self.device)
-        for task in self.tasks.values():
+        for task in self.model.module.tasks.values():
             task.normalizer.to(self.device)
             if task.element_references is not None:
                 task.element_references.to(self.device)
 
+    def validate_atoms_data(self, atoms: Atoms, task_name: str) -> None:
+        """
+        Validate and set defaults for calculator input data.
+
+        Delegates to the model's backbone for model-specific validation.
+        """
+        self.model.module.validate_atoms_data(atoms, task_name)
+
     def predict_step(self, state: State, data: AtomicData) -> dict[str, torch.tensor]:
         return self.predict(data)
-
-    def get_composition_charge_spin_dataset(self, data):
-        composition_sum = data.atomic_numbers.new_zeros(
-            self.model.module.backbone.max_num_elements,
-            dtype=torch.int,
-        ).index_add(
-            0,
-            data.atomic_numbers.to(torch.int),
-            data.atomic_numbers.new_ones(data.atomic_numbers.shape[0], dtype=torch.int),
-        )
-        comp_charge_spin = (
-            composition_sum,
-            getattr(data, "charge", None),
-            getattr(data, "spin", None),
-        )
-        return comp_charge_spin, getattr(data, "dataset", [None])
 
     @collate_predictions
     def predict(
         self, data: AtomicData, undo_element_references: bool = True
     ) -> dict[str, torch.tensor]:
         if not self.lazy_model_intialized:
-            # merge everything on CPU
-            if self.inference_mode.merge_mole:
-                # replace backbone with non MOE version
-                assert (
-                    data.natoms.numel() == 1
-                ), f"Cannot merge model with multiple systems in batch. Must be exactly 1 system, found {data.natoms.numel()}"
-                self.model.module.backbone = (
-                    self.model.module.backbone.merge_MOLE_model(data.clone())
-                )
-                self.model.eval()
-            # move to device
-            self.move_to_device()
-            if self.inference_mode.compile:
-                logging.warning(
-                    "Model is being compiled this might take a while for the first time"
-                )
-                self.model = torch.compile(self.model, dynamic=True)
-            self.lazy_model_intialized = True
+            self._lazy_init(data)
 
-        if self.inference_mode.external_graph_gen and data.edge_index.shape[1] == 0:
-            raise ValueError(
-                "Cannot run inference with external graph generation on empty edge index. "
-                "Please ensure the input data has valid edges."
+        # Handle single-atom systems (natoms==1 and pbc all False)
+        # Skip this check if the model natively supports single atoms
+        if not self.model.module.supports_single_atoms:
+            single_atom_result = single_atom_prediction_from_lookup(
+                data=data,
+                atom_refs=self.atom_refs,
+                tasks=self.tasks,
+                device=self.device,
             )
+            if single_atom_result is not None:
+                return single_atom_result
 
-        data_device = data.to(self.device)
+        # Regular model prediction path
+        # this needs to be .clone() to avoid issues with graph parallel modifying this data with MOLE
+        data_device = data.to(self.device).clone()
 
-        if self.inference_mode.merge_mole:
-            if self.merged_on is None:
-                # only get embeddings after moved to final device to get right types
-                self.merged_on = self.get_composition_charge_spin_dataset(data_device)
-            else:
-                this_sys = self.get_composition_charge_spin_dataset(data_device)
-                assert (
-                    data_device.natoms.numel() == 1
-                ), f"Cannot run merged model on batch with multiple systems. Must be exactly 1 system, found {data_device.natoms.numel()}"
-                assert (
-                    self.merged_on[0][0].isclose(this_sys[0][0], rtol=1e-5).all()
-                ), "Cannot run on merged model on system. Embeddings seem different..."
-                assert (
-                    self.merged_on[0][1] == this_sys[0][1]
-                ), f"Cannot run on merged model on system. Charge is diferrent {self.merged_on[0][1]} vs {this_sys[0][1]}"
-                assert (
-                    self.merged_on[0][2] == this_sys[0][2]
-                ), f"Cannot run on merged model on system. Spin is diferrent {self.merged_on[0][2]} vs {this_sys[0][2]}"
-                assert (
-                    self.merged_on[1] == this_sys[1]
-                ), f"Cannot run on merged model on system. Dataset is diferrent {self.merged_on[1]} vs {this_sys[1]}"
+        dtype = self.inference_settings.base_precision_dtype
+        if not self._warned_upcast:
+            self._warned_upcast = warn_if_upcasting(data_device.pos.dtype, dtype)
+        for key, val in data_device:
+            if torch.is_tensor(val) and val.is_floating_point():
+                data_device[key] = val.to(dtype)
 
-        inference_context = torch.no_grad() if self.direct_forces else nullcontext()
+        # Model handles any per-prediction checks (e.g., MOLE consistency)
+        self.model.module.on_predict_check(data_device)
+
+        return self._run_inference(data_device, undo_element_references)
+
+    def _lazy_init(self, data: AtomicData) -> None:
+        """
+        Lazy initialization on first predict call.
+        """
+        # Model handles its own preparation (MOLE merge, eval mode, etc.)
+        self.model.module.prepare_for_inference(data, self.inference_settings)
+
+        self.model.to(self.inference_settings.base_precision_dtype)
+
+        self.move_to_device()
+
+        if self.inference_settings.compile:
+            logging.warning(
+                "Model is being compiled this might take a while for the first time"
+            )
+            torch._dynamo.config.recompile_limit = 32
+            self.model = torch.compile(self.model, dynamic=True)
+
+        self.lazy_model_intialized = True
+
+    def _run_inference(self, data: AtomicData, undo_refs: bool) -> dict:
+        """
+        Execute model inference.
+        """
+        inference_context = (
+            torch.no_grad()
+            if self.model.module.backbone.regress_config.direct_forces
+            else nullcontext()
+        )
         tf32_context = (
-            tf32_context_manager() if self.inference_mode.tf32 else nullcontext()
+            tf32_context_manager() if self.inference_settings.tf32 else nullcontext()
         )
 
-        pred_output = {}
         with inference_context, tf32_context:
-            output = self.model(data_device)
-            for task_name, task in self.tasks.items():
-                pred_output[task_name] = task.normalizer.denorm(
-                    output[task_name][task.property]
-                )
-                if undo_element_references and task.element_references is not None:
-                    pred_output[task_name] = task.element_references.undo_refs(
-                        data_device, pred_output[task_name]
-                    )
+            output = self.model(data)
+            return self._process_outputs(data, output, undo_refs)
 
+    def _process_outputs(self, data: AtomicData, output: dict, undo_refs: bool) -> dict:
+        """
+        Denormalize and post-process model outputs.
+        """
+        pred_output = {}
+        for task_name, task in self.model.module.tasks.items():
+            pred_output[task_name] = task.normalizer.denorm(
+                output[task_name][task.property]
+            )
+            if self.assert_on_nans:
+                assert (
+                    torch.isfinite(pred_output[task_name]).all()
+                ), f"NaNs/Infs found in prediction for task {task_name}.{task.property}"
+            if undo_refs and task.element_references is not None:
+                pred_output[task_name] = task.element_references.undo_refs(
+                    data, pred_output[task_name]
+                )
         return pred_output
 
 
-def get_dataset_to_tasks_map(tasks: Sequence[Task]) -> dict[str, list[Task]]:
-    """Create a mapping from dataset names to their associated tasks.
+def move_tensors_to_cpu(data):
+    """
+    Recursively move all PyTorch tensors in a nested data structure to CPU.
 
     Args:
-        tasks: A sequence of Task objects to be organized by dataset
+        data: Input data structure (dict, list, tuple, tensor, or other)
 
     Returns:
-        A dictionary mapping dataset names (str) to lists of Task objects
-        that are associated with that dataset
+        Data structure with all tensors moved to CPU
     """
-    dset_to_tasks_map = defaultdict(list)
-    for task in tasks:
-        for dataset_name in task.datasets:
-            dset_to_tasks_map[dataset_name].append(task)
-    return dict(dset_to_tasks_map)
+    if isinstance(data, torch.Tensor):
+        return data.cpu()
+    elif isinstance(data, dict):
+        return {key: move_tensors_to_cpu(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [move_tensors_to_cpu(item) for item in data]
+    elif isinstance(data, tuple):
+        return tuple(move_tensors_to_cpu(item) for item in data)
+    else:
+        # Return as-is for non-tensor types (str, int, float, etc.)
+        return data
 
 
-def _run_server_process(predictor_config, port, num_workers, ready_queue):
-    """Function to run server in separate process"""
-    try:
-        server = MLIPInferenceServerWebSocket(
-            predictor_config=predictor_config,
-            port=port,
-            num_workers=num_workers,
+class MLIPWorkerLocal:
+    def __init__(
+        self,
+        worker_id: int,
+        world_size: int,
+        predictor_config: dict,
+        master_port: int | None = None,
+        master_address: str | None = None,
+    ):
+        self.worker_id = worker_id
+        self.world_size = world_size
+        self.predictor_config = predictor_config
+        self.master_address = (
+            ray.util.get_node_ip_address() if master_address is None else master_address
         )
-        # Signal that server is ready
-        ready_queue.put("ready")
-        server.run()
-    except Exception as e:
-        ready_queue.put(f"error: {e}")
+        self.master_port = get_free_port() if master_port is None else master_port
+        self.is_setup = False
+        self.last_received_atomic_data = None
+
+    def get_master_address_and_port(self):
+        return (self.master_address, self.master_port)
+
+    def get_device_for_local_rank(self):
+        return get_device_for_local_rank()
+
+    def _distributed_setup(
+        self,
+    ):
+        # initialize distributed environment
+        # TODO, this wont work for multi-node, need to fix master addr
+        logging.info(f"Initializing worker {self.worker_id}...")
+        setup_env_local_multi_gpu(self.worker_id, self.master_port, self.master_address)
+
+        device = self.predictor_config.get("device", "cpu")
+        assign_device_for_local_rank(device == "cpu", 0)
+        backend = "gloo" if device == "cpu" else "nccl"
+        dist.init_process_group(
+            backend=backend,
+            rank=self.worker_id,
+            world_size=self.world_size,
+        )
+        gp_utils.setup_graph_parallel_groups(self.world_size, backend)
+        self.predict_unit = hydra.utils.instantiate(self.predictor_config)
+        self.device = get_device_for_local_rank()
+        logging.info(
+            f"Worker {self.worker_id}, gpu_id: {ray.get_gpu_ids()}, loaded predict unit: {self.predict_unit}, "
+            f"on port {self.master_port}, with device: {self.device}, config: {self.predictor_config}"
+        )
+        self.is_setup = True
+
+    def predict(
+        self, data: AtomicData, use_nccl: bool = False
+    ) -> dict[str, torch.tensor] | None:
+        if not self.is_setup:
+            self._distributed_setup()
+
+        out = self.predict_unit.predict(data)
+        if self.worker_id == 0:
+            return move_tensors_to_cpu(out)
+
+        if self.worker_id != 0 and use_nccl:
+            self.last_received_atomic_data = data.to(self.device)
+            while True:
+                torch.distributed.broadcast(self.last_received_atomic_data.pos, src=0)
+                torch.distributed.broadcast(self.last_received_atomic_data.cell, src=0)
+                self.predict_unit.predict(self.last_received_atomic_data)
+
+        return None
+
+
+@remote
+class MLIPWorker(MLIPWorkerLocal):
+    pass
 
 
 class ParallelMLIPPredictUnit(MLIPPredictUnitProtocol):
@@ -330,28 +629,13 @@ class ParallelMLIPPredictUnit(MLIPPredictUnitProtocol):
         inference_settings: InferenceSettings | None = None,
         seed: int = 41,
         atom_refs: dict | None = None,
-        server_config: dict | None = None,
-        client_config: dict | None = None,
+        form_elem_refs: dict | None = None,
+        assert_on_nans: bool = False,
+        num_workers: int = 1,
+        num_workers_per_node: int = 8,
+        log_level: int = logging.INFO,
     ):
-        """
-        This PredictUnit can be used to run inference on a remote server.
-
-        It can be used in several modes:
-        1) If server_config is provided then it will start a local server in a thread and create a client to connect to it.
-        A separate client cannot be provided in this case.
-        2) If server_config is NOT provided and client_config is provided, we assume the remote server is already running
-        and we will create a client to connect to it.
-        """
         super().__init__()
-        assert (server_config is not None) ^ (
-            client_config is not None
-        ), "Exactly one of server_config or client_config must be provided."
-
-        config = {}
-        self.server_process = None
-
-        # TODO, we need this just to get the datasets for the FAIRChemCalculator, this is not great, think about if
-        # we can remove this dependency
         _mlip_pred_unit = MLIPPredictUnit(
             inference_model_path=inference_model_path,
             device="cpu",
@@ -359,92 +643,377 @@ class ParallelMLIPPredictUnit(MLIPPredictUnitProtocol):
             inference_settings=inference_settings,
             seed=seed,
             atom_refs=atom_refs,
+            form_elem_refs=form_elem_refs,
         )
+        if inference_settings is None:
+            inference_settings = InferenceSettings()
+        self.inference_settings = inference_settings
         self._dataset_to_tasks = copy.deepcopy(_mlip_pred_unit.dataset_to_tasks)
+        self._validate_atoms_data_fn = _mlip_pred_unit.model.module.validate_atoms_data
 
-        if server_config is not None:
-            logging.info(f"Starting inference server with config {server_config}")
-            if "port" not in server_config:
-                server_config["port"] = get_free_port()
-            config["server"] = server_config
-            self.server_address = "localhost"
-            self.server_port = server_config.get("port")
-            self.workers = server_config.get("workers", 1)
-            predict_unit_config = {
-                "_target_": "fairchem.core.units.mlip_unit.predict.MLIPPredictUnit",
-                "inference_model_path": inference_model_path,
-                "device": device,
-                "overrides": overrides,
-                "inference_settings": inference_settings,
-                "seed": seed,
-                "atom_refs": atom_refs,
-            }
+        predict_unit_config = {
+            "_target_": "fairchem.core.units.mlip_unit.predict.MLIPPredictUnit",
+            "inference_model_path": inference_model_path,
+            "device": device,
+            "overrides": overrides,
+            "inference_settings": inference_settings.to_omegaconf(),
+            "seed": seed,
+            "atom_refs": atom_refs,
+            "form_elem_refs": form_elem_refs,
+            "assert_on_nans": assert_on_nans,
+        }
 
-            self._start_server_process(
-                predict_unit_config, self.server_port, self.workers
-            )
-
-        if client_config is not None:
-            logging.info(f"Connecting to inference server with config {client_config}")
-            self.client = hydra.utils.instantiate(client_config)
-        else:
-            self.client = SyncMLIPInferenceWebSocketClient(
-                host=self.server_address,
-                port=self.server_port,
-            )
-
-    def _start_server_process(self, predict_unit_config, port, workers):
-        """Start server process and wait for it to be ready"""
-        # Create a queue to check server readiness
-        self.ready_queue = mp.Queue()
-
-        # Start server in separate process instead of thread
-        self.server_process = mp.Process(
-            target=_run_server_process,
-            args=(
-                predict_unit_config,
-                port,
-                workers,
-                self.ready_queue,
-            ),
+        logging.basicConfig(
+            level=log_level,
+            force=True,
+            stream=sys.stdout,
+            format="%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s",
         )
-        self.server_process.start()
+        # Optional: keep Ray/uvicorn chatty logs in check
+        logging.getLogger("ray").setLevel(log_level)
+        logging.getLogger("uvicorn").setLevel(log_level)
+        if not ray.is_initialized():
+            # in CI envrionment, we want to control the number of CPUs allocated to limit the pool of IDLE ray workers
+            if os.environ.get("CI"):
+                logging.info(
+                    f"CI environment detected, initializing ray with limited CPUs: {num_workers_per_node}"
+                )
+                ray.init(
+                    logging_level=log_level,
+                    num_cpus=num_workers_per_node,
+                    runtime_env={
+                        "env_vars": {"RAY_DEBUG": "1"},
+                    },
+                )
+            else:
+                ray.init(logging_level=log_level)
 
-        # Wait for server to be ready (with timeout)
-        try:
-            result = self.ready_queue.get(timeout=30)  # 30 second timeout
-            if result != "ready":
-                raise RuntimeError(f"Server failed to start: {result}")
-            logging.info("Server is ready")
-        except Exception as e:
-            if self.server_process.is_alive():
-                self.server_process.terminate()
-            raise e
+        self.atomic_data_on_device = None
 
-    def cleanup(self):
-        logging.info("Shutting down ParallelMLIPPredictUnit")
-        # Clean up server process if it was started locally
-        if hasattr(self, "server_process") and self.server_process.is_alive():
-            self.server_process.terminate()
-            self.server_process.join(timeout=10)
-            if self.server_process.is_alive():
-                self.server_process.kill()
+        num_nodes = math.ceil(num_workers / num_workers_per_node)
+        num_workers_on_node_array = [num_workers_per_node] * num_nodes
+        if num_workers % num_workers_per_node > 0:
+            num_workers_on_node_array[-1] = num_workers % num_workers_per_node
+        logging.info(
+            f"Creating placement groups with {num_workers_on_node_array} workers on {device}"
+        )
 
-    def __del__(self):
-        self.cleanup()
+        # first create one placement group for each node
+        num_gpu_per_worker = 1 if device == "cuda" else 0
+        placement_groups = []
+        for workers in num_workers_on_node_array:
+            bundle = {"CPU": workers}
+            if device == "cuda":
+                bundle["GPU"] = workers
+            pg = ray.util.placement_group([bundle], strategy="STRICT_PACK")
+            placement_groups.append(pg)
+        ray.get(pg.ready())  # Wait for each placement group to be scheduled
 
-    def predict(
-        self, data: AtomicData, undo_element_references: bool = True
-    ) -> dict[str, torch.tensor]:
-        """
-        Predict method that sends data to the remote server and returns predictions.
-        """
-        if not hasattr(self, "client"):
-            raise RuntimeError(
-                "Client is not initialized. Ensure server_config or client_config is provided."
+        # Need to still place worker to occupy space, otherwise ray double books this GPU
+        rank0_worker = MLIPWorker.options(
+            num_gpus=num_gpu_per_worker,
+            scheduling_strategy=PlacementGroupSchedulingStrategy(
+                placement_group=placement_groups[0],
+                placement_group_bundle_index=0,  # Use the first (and only) bundle in the PG
+                placement_group_capture_child_tasks=True,  # Ensure child tasks also run in this PG
+            ),
+        ).remote(0, num_workers, predict_unit_config)
+
+        local_gpu_or_cpu = ray.get(rank0_worker.get_device_for_local_rank.remote())
+        os.environ[CURRENT_DEVICE_TYPE_STR] = local_gpu_or_cpu
+
+        self.workers = []
+        self.local_rank0 = MLIPWorkerLocal(
+            worker_id=0,
+            world_size=num_workers,
+            predictor_config=predict_unit_config,
+        )
+        master_addr, master_port = self.local_rank0.get_master_address_and_port()
+        logging.info(f"Started rank0 on {master_addr}:{master_port}")
+
+        # next place all ranks in order and pack them on placement groups
+        # ie: rank0-7 -> placement group 0, 8->15 -> placement group 1 etc.
+        worker_id = 0
+        for pg_idx, pg in enumerate(placement_groups):
+            workers = num_workers_on_node_array[pg_idx]
+            logging.info(
+                f"Launching workers for placement group {pg_idx} (Node {pg_idx}), workers={workers}"
             )
-        return self.client.call(data)
+
+            for i in range(workers):
+                # skip the first one because it's already been initialized above
+                if pg_idx == 0 and i == 0:
+                    worker_id += 1
+                    continue
+                # Each actor requests 1 worker worth of resources and uses the specific placement group
+                actor = MLIPWorker.options(
+                    num_gpus=num_gpu_per_worker,
+                    scheduling_strategy=PlacementGroupSchedulingStrategy(
+                        placement_group=pg,
+                        placement_group_bundle_index=0,  # Use the first (and only) bundle in the PG
+                        placement_group_capture_child_tasks=True,  # Ensure child tasks also run in this PG
+                    ),
+                ).remote(
+                    worker_id,
+                    num_workers,
+                    predict_unit_config,
+                    master_port,
+                    master_addr,
+                )
+                self.workers.append(actor)
+                worker_id += 1
+
+    def predict(self, data: AtomicData) -> dict[str, torch.tensor]:
+        # put the reference in the object store only once
+        if not self.inference_settings.merge_mole or self.atomic_data_on_device is None:
+            data_ref = ray.put(data)
+            # this will put the ray works into an infinite loop listening for broadcasts
+            _futures = [
+                w.predict.remote(data_ref, use_nccl=self.inference_settings.merge_mole)
+                for w in self.workers
+            ]
+            self.atomic_data_on_device = data.clone()
+        else:
+            self.atomic_data_on_device.pos = data.pos.to(self.local_rank0.device)
+            self.atomic_data_on_device.cell = data.cell.to(self.local_rank0.device)
+            torch.distributed.broadcast(self.atomic_data_on_device.pos, src=0)
+            torch.distributed.broadcast(self.atomic_data_on_device.cell, src=0)
+
+        return self.local_rank0.predict(self.atomic_data_on_device)
+
+    def validate_atoms_data(self, atoms: Atoms, task_name: str) -> None:
+        """
+        Validate and set defaults for calculator input data.
+
+        Delegates to the model's validate_atoms_data captured at init time.
+        """
+        self._validate_atoms_data_fn(atoms, task_name)
 
     @property
     def dataset_to_tasks(self) -> dict[str, list]:
         return self._dataset_to_tasks
+
+
+_DEFAULT_BATCH_SERVER_TIMEOUT_S = 600.0
+
+
+def _resolve_batch_server_timeout() -> float | None:
+    """Read ``FAIRCHEM_BATCH_SERVER_TIMEOUT_S`` once per construction.
+
+    Returns the float seconds to pass as ``DeploymentResponse.result``'s
+    ``timeout_s`` (Ray Serve's blocking wait kwarg). ``"none"`` /
+    ``"0"`` / negative values disable the bound. Malformed values fall
+    back to the default with a warning so a typo can't silently revert
+    to an indefinite wait.
+    """
+    raw = os.environ.get("FAIRCHEM_BATCH_SERVER_TIMEOUT_S")
+    if raw is None:
+        return _DEFAULT_BATCH_SERVER_TIMEOUT_S
+    cleaned = raw.strip().lower()
+    if cleaned in ("none", ""):
+        return None
+    try:
+        val = float(cleaned)
+    except ValueError:
+        logging.warning(
+            "FAIRCHEM_BATCH_SERVER_TIMEOUT_S=%r is not a number; "
+            "falling back to default %.1fs.",
+            raw,
+            _DEFAULT_BATCH_SERVER_TIMEOUT_S,
+        )
+        return _DEFAULT_BATCH_SERVER_TIMEOUT_S
+    if val <= 0:
+        return None
+    return val
+
+
+class BatchServerPredictUnit(MLIPPredictUnitProtocol):
+    """
+    PredictUnit wrapper that uses Ray Serve for batched inference.
+
+    This provides a clean interface compatible with MLIPPredictUnitProtocol
+    while leveraging Ray Serve's batching capabilities under the hood.
+
+    Works with both ``BatchPredictServer`` (single model) and
+    ``MultiplexedBatchPredictServer`` (on-demand model loading). For
+    multiplexed deployments, pass ``multiplexed_model_id`` to ``from_deployment_connection_info``
+    which binds the Ray Serve ``multiplexed_model_id`` to the handle so
+    that all requests are transparently routed to the correct model.
+
+    Can be constructed directly with a server handle, or via
+    ``from_deployment_connection_info`` to connect to an already-running deployment.
+
+    Every blocking ``.result()`` on a Ray Serve future is bounded by a
+    per-call timeout sourced from the ``FAIRCHEM_BATCH_SERVER_TIMEOUT_S``
+    environment variable (default ``600.0`` seconds). A wedged handle
+    or unresponsive replica surfaces as a clean ``TimeoutError`` instead
+    of an indefinite hang.  Use the env var to override; set to a
+    floating-point number of seconds, or to ``"none"`` / ``"0"`` to
+    disable the timeout entirely.
+    """
+
+    _handle_cache: ClassVar[dict[str, DeploymentHandle]] = {}
+
+    def __init__(
+        self,
+        server_handle: DeploymentHandle,
+        multiplexed_model_id: str | None = None,
+    ):
+        """
+        Args:
+            server_handle: Ray Serve deployment handle for a
+                ``BatchPredictServer`` or ``MultiplexedBatchPredictServer``.
+            multiplexed_model_id: Optional model identifier for multiplexed
+                deployments in the format
+                ``"checkpoint_name_or_path:settings"``. When provided, the
+                handle is configured with Ray Serve's
+                ``multiplexed_model_id`` so that all calls are routed to
+                the correct model on the server.
+        """
+        if multiplexed_model_id is not None:
+            if not server_handle.is_multiplexed.remote().result():
+                raise ValueError(
+                    f"multiplexed_model_id={multiplexed_model_id!r} was "
+                    "provided but the deployment is not a multiplexed "
+                    "server. Use MultiplexedBatchPredictServer or remove "
+                    "the multiplexed_model_id argument."
+                )
+            server_handle = server_handle.options(
+                multiplexed_model_id=multiplexed_model_id
+            )
+        self.server_handle = server_handle
+        self._multiplexed_model_id = multiplexed_model_id
+        # Identity-based cache for ``validate_atoms_data``.
+        # ``ase_calculator.calculate()`` calls validate on every
+        # optimizer step with the same ``atoms.info`` dict object;
+        # validation only mutates that dict in place to add defaults
+        # (charge, spin, ...). After the first call the dict is
+        # saturated, so any subsequent call on the same dict is
+        # guaranteed redundant. We key on ``(id(info), task_name)``;
+        # since this unit holds no reference to the dict itself, this
+        # is purely a fast-path skip and cannot extend its lifetime.
+        self._validated_info_keys: set[tuple[int, str]] = set()
+        # Per-call ``.result()`` timeout (seconds). Sourced from
+        # ``FAIRCHEM_BATCH_SERVER_TIMEOUT_S`` so callers can override
+        # without code changes (tests can shrink it to fail fast;
+        # users on slow CPUs can lengthen it). ``None`` disables the
+        # bound entirely so behavior matches the pre-timeout default
+        # if someone needs it.
+        self._request_timeout_s = _resolve_batch_server_timeout()
+
+    @property
+    def multiplexed_model_id(self) -> str | None:
+        """
+        The multiplexed model ID bound to this unit's server handle.
+
+        Read-only — changing this after construction would have no effect
+        on the already-configured handle.
+        """
+        return self._multiplexed_model_id
+
+    @classmethod
+    def from_deployment_connection_info(
+        cls,
+        deployment_name: str = "predict-server",
+        ray_address: str | None = None,
+        namespace: str | None = None,
+        multiplexed_model_id: str | None = None,
+    ) -> BatchServerPredictUnit:
+        """
+        Connect to an already-running server by deployment name.
+
+        Args:
+            deployment_name: Name of the Ray Serve application.
+            ray_address: Ray client address (e.g. ``ray://host:10001``).
+                Falls back to ``RAY_ADDRESS`` env var. If *None* and env var
+                is unset, assumes Ray is already initialised locally.
+            namespace: Ray namespace. Falls back to
+                ``RAY_NAMESPACE_SERVE_FAIRCHEM`` env var.
+            multiplexed_model_id: Optional model identifier for multiplexed
+                deployments in the format
+                ``"checkpoint_name_or_path:settings"``.
+
+        Returns:
+            A ``BatchServerPredictUnit`` connected to the remote deployment.
+        """
+        if ray_address is None:
+            ray_address = os.environ.get("RAY_ADDRESS")
+        if namespace is None:
+            namespace = os.environ.get("RAY_NAMESPACE_SERVE_FAIRCHEM")
+
+        cache_key = f"{ray_address}|{namespace}|{deployment_name}"
+        if cache_key not in cls._handle_cache:
+            if ray_address and not ray.is_initialized():
+                ray.init(ray_address, namespace=namespace)
+
+            handle = get_app_handle_with_retry(deployment_name)
+            cls._handle_cache[cache_key] = handle
+
+        return cls(
+            cls._handle_cache[cache_key],
+            multiplexed_model_id=multiplexed_model_id,
+        )
+
+    def predict(self, data: AtomicData, undo_element_references: bool = True) -> dict:
+        """
+        Args:
+            data: AtomicData object (single system)
+            undo_element_references: Whether to undo element references
+
+        Returns:
+            Prediction dictionary
+        """
+        result = self.server_handle.remote(data, undo_element_references).result(
+            timeout_s=self._request_timeout_s
+        )
+        return result
+
+    def validate_atoms_data(self, atoms: Atoms, task_name: str) -> None:
+        """
+        Validate and set defaults for calculator input data.
+
+        Delegates to the server's predict unit so that validation is
+        model-specific rather than hardcoded.  The server runs
+        ``predict_unit.validate_atoms_data`` on a stub ``Atoms`` and
+        returns the mutated ``atoms.info`` dict which is applied locally.
+
+        Skips the Ray Serve round-trip when the same ``atoms.info``
+        dict object has already been validated for this task: the
+        server's validation is purely defaulting and was applied to
+        the dict in place on the first call, so subsequent calls
+        with the same dict are no-ops. ``ase_calculator.calculate()``
+        calls this on every optimizer step — without the skip, each
+        step pays a network hop.
+        """
+        key = (id(atoms.info), task_name)
+        if key in self._validated_info_keys:
+            return
+        updated_info = self.server_handle.validate_atoms_data.remote(
+            dict(atoms.info), task_name
+        ).result(timeout_s=self._request_timeout_s)
+        atoms.info.update(updated_info)
+        self._validated_info_keys.add(key)
+
+    @cached_property
+    def dataset_to_tasks(self) -> dict:
+        return self.server_handle.get_predict_unit_attribute.remote(
+            "dataset_to_tasks"
+        ).result(timeout_s=self._request_timeout_s)
+
+    @cached_property
+    def atom_refs(self) -> dict | None:
+        return self.server_handle.get_predict_unit_attribute.remote("atom_refs").result(
+            timeout_s=self._request_timeout_s
+        )
+
+    @cached_property
+    def inference_settings(self) -> InferenceSettings:
+        return self.server_handle.get_predict_unit_attribute.remote(
+            "inference_settings"
+        ).result(timeout_s=self._request_timeout_s)
+
+    @cached_property
+    def form_elem_refs(self) -> dict:
+        return self.server_handle.get_predict_unit_attribute.remote(
+            "form_elem_refs"
+        ).result(timeout_s=self._request_timeout_s)

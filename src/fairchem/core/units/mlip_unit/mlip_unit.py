@@ -137,13 +137,23 @@ def convert_train_checkpoint_to_inference_checkpoint(
 
 
 def initialize_finetuning_model(
-    checkpoint_location: str, overrides: dict | None = None, heads: dict | None = None
+    checkpoint_location: str,
+    overrides: dict | None = None,
+    heads: dict | None = None,
+    strict: bool = True,
 ) -> torch.nn.Module:
-    model, checkpoint = load_inference_model(checkpoint_location, overrides)
+    model, checkpoint = load_inference_model(
+        checkpoint_location, overrides, strict=strict
+    )
 
     logging.warning(
         f"initialize_finetuning_model starting from checkpoint_location: {checkpoint_location}"
     )
+
+    # if no heads are provided use heads from the checkpoint
+    if heads is None:
+        model.finetune_model_full_config = checkpoint.model_config
+        return model
 
     checkpoint.model_config["heads"] = deepcopy(heads)
     model.finetune_model_full_config = checkpoint.model_config
@@ -556,6 +566,8 @@ class MLIPTrainEvalUnit(
             else distutils.get_world_size()
         )
 
+        self.last_loss = None
+        self.last_grad_norm = None
         self.num_params = sum(p.numel() for p in model.parameters())
         if self.logger:
             self.logger.log_summary(
@@ -751,6 +763,7 @@ class MLIPTrainEvalUnit(
 
                 if self.logger:
                     self.logger.log({"train/grad_norm": grad_norm}, step=step)
+                self.last_grad_norm = float(grad_norm)
             self.optimizer.step()
             if self.ema_model is not None:
                 self.ema_model.update_parameters(self.model)

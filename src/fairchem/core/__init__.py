@@ -23,7 +23,9 @@ warnings.filterwarnings(
 
 from fairchem.core._config import clear_cache
 from fairchem.core.calculate import pretrained_mlip
-from fairchem.core.calculate.ase_calculator import FAIRChemCalculator
+from fairchem.core.calculate.ase_calculator import (
+    FAIRChemCalculator,
+)
 from fairchem.core.calculate.iqa import IQACalculator, predict_iqa_pkl
 from fairchem.core.units.mlip_unit import load_predict_unit
 

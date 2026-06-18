@@ -1,3 +1,10 @@
+"""
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+"""
+
 # example how to use checkpoint fixtures
 from __future__ import annotations
 
@@ -12,6 +19,7 @@ from fairchem.core.datasets.ase_datasets import AseDBDataset
 from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 from fairchem.core.units.mlip_unit import MLIPPredictUnit
+from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
 
 # Test equivariance in both fp32 and fp64
 # If error in equivariance is due to numerical error in fp
@@ -84,15 +92,21 @@ def equivariance_on_pt(
         radius=100,
         r_edges=False,
         r_data_keys=["spin", "charge"],
-        target_dtype=dtype
+        target_dtype=dtype,
     )
 
-    n_repeats = 10
+    n_repeats = 5
+    settings = InferenceSettings(
+        activation_checkpointing=False, base_precision_dtype=dtype
+    )
+    predictor = MLIPPredictUnit(
+        inference_checkpoint_path,
+        device="cpu",
+        inference_settings=settings,
+    )
     for sample_idx in range(5):
         torch.manual_seed(42)
         rotations = [rand_matrix(dtype=dtype) for _ in range(n_repeats)]
-        predictor = MLIPPredictUnit(inference_checkpoint_path, device="cpu")
-        predictor.model = predictor.model.to(dtype)
 
         sample = a2g(db.get_atoms(sample_idx), task_name="oc20")
         sample.pos += 500

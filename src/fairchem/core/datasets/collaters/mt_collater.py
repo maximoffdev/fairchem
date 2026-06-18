@@ -61,30 +61,32 @@ class MTCollater:
         tasks_to_report_on = []
 
         for data in data_list:
-            if data.dataset not in datasets_in_batch_to_task_configs:
-                datasets_in_batch_to_task_configs[data.dataset] = dataset_task_map[
-                    data.dataset
+            dataset_name = data.dataset[0]
+            if dataset_name not in datasets_in_batch_to_task_configs:
+                datasets_in_batch_to_task_configs[dataset_name] = dataset_task_map[
+                    dataset_name
                 ]
                 for task, task_config in datasets_in_batch_to_task_configs[
-                    data.dataset
+                    dataset_name
                 ].items():
                     # if this is the first time we have seen this kind of dataset
                     # record its out spec
                     if (
                         "out_spec"
-                        not in datasets_in_batch_to_task_configs[data.dataset][task]
+                        not in datasets_in_batch_to_task_configs[dataset_name][task]
                     ):
                         if task_config["level"] == "system":
                             dim = list(getattr(data, task).shape)
-                        elif task_config["level"] == "atom":
-                            dim = list(getattr(data, task).shape[1:])
-                        elif task_config["level"] == "edge":
+                        elif (
+                            task_config["level"] == "atom"
+                            or task_config["level"] == "edge"
+                        ):
                             dim = list(getattr(data, task).shape[1:])
                         else:
                             raise ValueError(
                                 f"task level must be either system, atom, or edge, found {task_config['level']}"
                             )
-                        datasets_in_batch_to_task_configs[data.dataset][task][
+                        datasets_in_batch_to_task_configs[dataset_name][task][
                             "out_spec"
                         ] = {
                             "dim": dim,
@@ -119,7 +121,11 @@ class MTCollater:
         # set missing attributes to inf for all data objects in the batch
         # according to level, output dim, and dtype
         for data in data_list:
-            for task in missing_tasks[data.dataset]:
+            assert (
+                len(data) == 1
+            ), "data must contain a single element, can not batch batches"
+            assert len(data.dataset) == 1, "dataset name must be a single string"
+            for task in missing_tasks[data.dataset[0]]:
                 dim = task_config[task]["out_spec"]["dim"]
                 dtype = getattr(torch, task_config[task]["out_spec"]["dtype"])
                 if task_config[task]["level"] == "atom":

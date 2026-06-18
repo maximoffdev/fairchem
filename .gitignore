@@ -135,3 +135,12 @@ docs/**.json
 
 runs/
 *.bak
+
+node_modules/*
+cache.*.json
+docs/uma_tutorials/ni_tutorial_results/*
+docs/**/*.traj.*
+_build/*
+package.json
+package-lock.json
+bulks.pkl
