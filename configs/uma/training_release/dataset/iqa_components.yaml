@@ -15,11 +15,11 @@ iqa_train:
     iqa_inter_ab: E_IQA_Inter(A,B)/2
     iqa_forces_direct: Fn(A,SumB)
     iqa_forces_grad: Fn(A,SumB)
-    # Edge-level pairwise IQA components
-    # iqa_vee_edge: Vee(A,B)
-    # iqa_vne_edge: Vne(A,B)
-    # iqa_ven_edge: Ven(A,B)
-    # iqa_vnn_edge: Vnn(A,B)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -38,8 +38,8 @@ iqa_val:
     iqa_inter_ab: E_IQA_Inter(A,B)/2
     iqa_forces_direct: Fn(A,SumB)
     iqa_forces_grad: Fn(A,SumB)
-    # Edge-level pairwise IQA components
-    # iqa_vee_edge: Vee(A,B)
-    # iqa_vne_edge: Vne(A,B)
-    # iqa_ven_edge: Ven(A,B)
-    # iqa_vnn_edge: Vnn(A,B)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2

@@ -212,7 +212,7 @@
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_combined_head:
+    iqa_kinetic_head:
       prediction_key: node_pred
       label_key: iqa_kinetic
 
@@ -239,7 +239,7 @@
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_combined_head:
+    iqa_vne_head:
       prediction_key: node_pred
       label_key: iqa_vne
 
@@ -266,7 +266,7 @@
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_combined_head:
+    iqa_vee_head:
       prediction_key: node_pred
       label_key: iqa_vee
 
@@ -324,34 +324,11 @@
 #       prediction_key: node_pred
 #       label_key: iqa_vee_x
 
+# iqa_intra_a and iqa_inter_ab aggregates are not predicted directly.
+# They can be recomputed as the sum of their respective subterms.
+
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_intra_a
-  level: atom
-  property: node_pred
-  datasets: ${dataset_list}
-  # element_references:
-  #   _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-  #   element_references:
-  #     _target_: torch.DoubleTensor
-  #     _args_:
-  #       - ${element_refs.iqa_intra_elem_refs}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_intra_a_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_intra_a}
-    rmsd: ${normalizer_rmsd_iqa_intra_a}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_combined_head:
-      prediction_key: node_pred
-      label_key: iqa_intra_a
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_inter_ab
+  name: iqa_vne_ab
   level: edge
   property: edge_pred
   datasets: ${dataset_list}
@@ -359,14 +336,77 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_inter_ab_coef}
+    coefficient: ${iqa_vne_ab_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_inter_ab}
-    rmsd: ${normalizer_rmsd_iqa_inter_ab}
+    mean: ${normalizer_mean_iqa_vne_ab}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab}
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_combined_head:
+    iqa_vne_ab_head:
       prediction_key: edge_pred
-      label_key: iqa_inter_ab
+      label_key: iqa_vne_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_ab}
+    rmsd: ${normalizer_rmsd_iqa_vee_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vee_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_vee_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_ven_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_ven_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_ven_ab}
+    rmsd: ${normalizer_rmsd_iqa_ven_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_ven_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_ven_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vnn_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vnn_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vnn_ab}
+    rmsd: ${normalizer_rmsd_iqa_vnn_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vnn_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_vnn_ab

@@ -64,18 +64,26 @@ normalizer_rmsd_iqa_vee: 73.7236  # old: 772.831
 # normalizer_rmsd_iqa_vee_c: 909.29
 # normalizer_mean_iqa_vee_x: -100.909
 # normalizer_rmsd_iqa_vee_x: 140.044
-normalizer_mean_iqa_intra_a: 0.0
-normalizer_rmsd_iqa_intra_a: 1.0
-normalizer_mean_iqa_inter_ab: -0.69783
-normalizer_rmsd_iqa_inter_ab: 2.75929
-iqa_intra_a_coef: 1.0
 iqa_kinetic_coef: 1.0
 iqa_vne_coef: 1.0
 iqa_vee_coef: 1.0
 # iqa_vee_c_coef: 1.0
 # iqa_vee_x_coef: 1.0
-#iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
-iqa_inter_ab_coef: 1.0
+#iqa_inter_a_coef: 0.0
+# Edge-level subterm normalizers (halved for directed graph; from 10k molecules)
+normalizer_mean_iqa_vne_ab: -42.3197
+normalizer_rmsd_iqa_vne_ab: 74.067
+normalizer_mean_iqa_vee_ab: 40.7689
+normalizer_rmsd_iqa_vee_ab: 72.4889
+normalizer_mean_iqa_ven_ab: -42.3197
+normalizer_rmsd_iqa_ven_ab: 74.067
+normalizer_mean_iqa_vnn_ab: 43.1726
+normalizer_rmsd_iqa_vnn_ab: 73.5147
+# Edge-level subterm coefficients
+iqa_vne_ab_coef: 1.0
+iqa_vee_ab_coef: 1.0
+iqa_ven_ab_coef: 1.0
+iqa_vnn_ab_coef: 1.0
 
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
@@ -113,40 +121,44 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  iqa_combined_head:
-    module: fairchem.core.models.uma.escn_md.IQA_IntraSO2MultiHead
-    term_names:
-      - iqa_kinetic
-      - iqa_vne
-      - iqa_vee
-      # - iqa_vee_c
-      # - iqa_vee_x
-    aggregate_name: iqa_intra_a
-    predict_aggregate: true
+  # Dedicated heads for intra-atomic subterms
+  iqa_kinetic_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: true
+    edge_prediction: false
+    node_task_name: iqa_kinetic
+  iqa_vne_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: true
+    edge_prediction: false
+    node_task_name: iqa_vne
+  iqa_vee_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: true
+    edge_prediction: false
+    node_task_name: iqa_vee
+
+  # Dedicated heads for edge-level inter subterms
+  iqa_vne_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: false
     edge_prediction: true
-    edge_task_name: iqa_inter_ab
-    term_normalizers:
-      iqa_kinetic:
-        mean: ${normalizer_mean_iqa_kinetic}
-        rmsd: ${normalizer_rmsd_iqa_kinetic}
-      iqa_vne:
-        mean: ${normalizer_mean_iqa_vne}
-        rmsd: ${normalizer_rmsd_iqa_vne}
-      iqa_vee:
-        mean: ${normalizer_mean_iqa_vee}
-        rmsd: ${normalizer_rmsd_iqa_vee}
-      # iqa_vee_c:
-      #   mean: ${normalizer_mean_iqa_vee_c}
-      #   rmsd: ${normalizer_rmsd_iqa_vee_c}
-      # iqa_vee_x:
-      #   mean: ${normalizer_mean_iqa_vee_x}
-      #   rmsd: ${normalizer_rmsd_iqa_vee_x}
-    term_element_refs:
-      iqa_kinetic: ${element_refs.iqa_kinetic}
-      iqa_vne: ${element_refs.iqa_vne}
-      iqa_vee: ${element_refs.iqa_vee}
-      # iqa_vee_c: ${element_refs.iqa_vee_c}
-      # iqa_vee_x: ${element_refs.iqa_vee_x}
+    edge_task_name: iqa_vne_ab
+  iqa_vee_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: false
+    edge_prediction: true
+    edge_task_name: iqa_vee_ab
+  iqa_ven_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: false
+    edge_prediction: true
+    edge_task_name: iqa_ven_ab
+  iqa_vnn_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    node_prediction: false
+    edge_prediction: true
+    edge_task_name: iqa_vnn_ab
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
