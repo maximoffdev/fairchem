@@ -6,7 +6,7 @@ account: null
 qos: null
 mode: SLURM
 device: CUDA
-ranks_per_node: 8
+ranks_per_node: 4
 dataloader_workers: 0
 debug: false
 mem_gb: "0"
@@ -15,6 +15,6 @@ timeout_hr: "48"
 partition: clara
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
-num_moe_experts: 32
+num_moe_experts: 1
 cutoff_radius: 7.0   # Å; matched to K10L4 backbone default
 setup_commands: []
