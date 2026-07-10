@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-1-1-mean_and_rmsd_norm-with_ref
+  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -50,10 +50,10 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_intra_a: 7.02359
-normalizer_rmsd_iqa_intra_a: 15.3868
-normalizer_mean_iqa_inter_ab: -6.901365e-01
-normalizer_rmsd_iqa_inter_ab: 2.689259e+00
+normalizer_mean_iqa_intra_a: 6.93503
+normalizer_rmsd_iqa_intra_a: 21.0968
+normalizer_mean_iqa_inter_ab: -0.690065
+normalizer_rmsd_iqa_inter_ab: 2.68932
 iqa_intra_a_coef: 1.0
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
