@@ -3,7 +3,6 @@ defaults:
   - dataset: iqa_components
   - tasks: iqa_decompose
   - backbone: K10L4
-  - element_refs: iso_atom_elem_refs
   - _self_
 
 job:
@@ -38,25 +37,10 @@ otf_graph: False
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
-direct_forces: False
-
-# iqa_kinetic_coef: 1.0
-# iqa_vne_coef: 1.0
-# iqa_vee_coef: 1.0
-# iqa_inter_coef: 1.0
-# # Edge-level coefficients
-# iqa_inter_edge_coef: 1.0
-# iqa_vee_edge_coef: 1.0
-# iqa_vne_edge_coef: 1.0
-# iqa_ven_edge_coef: 1.0
-# iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_intra_a: 6.93503
-normalizer_rmsd_iqa_intra_a: 21.0968
-normalizer_mean_iqa_inter_ab: -0.690065
-normalizer_rmsd_iqa_inter_ab: 2.68932
-iqa_intra_a_coef: 1.0
-#iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
-iqa_inter_ab_coef: 1.0
+direct_forces: True
+normalizer_mean_iqa_mu_forces: 0.0
+normalizer_rmsd_iqa_mu_forces: 7.85378
+iqa_mu_forces_coef: 1.0
 
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
@@ -94,8 +78,8 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  iqa_combined_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+  iqa_mu_forces:
+    module: fairchem.core.models.uma.escn_md.Linear_Force_Head
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
@@ -108,7 +92,7 @@ runner:
     model:
       _target_: fairchem.core.models.base.HydraModel
       backbone: ${backbone}
-      pass_through_head_outputs: true
+      pass_through_head_outputs: false
       # _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
       # checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/be2896459a03fcde05e20d2fcefd11f450601fce/checkpoints/uma-s-1p2.pt
       # overrides:

@@ -13,6 +13,7 @@ iqa_train:
     iqa_inter_ab: E_IQA_Inter(A,B)/2
     iqa_forces_direct: Fn(A,SumB)
     iqa_forces_grad: Fn(A,SumB)
+    iqa_mu_forces: Mu(A)
     # Edge-level pairwise IQA components
     # iqa_vee_edge: Vee(A,B)
     # iqa_vne_edge: Vne(A,B)
@@ -34,6 +35,7 @@ iqa_val:
     iqa_inter_ab: E_IQA_Inter(A,B)/2
     iqa_forces_direct: Fn(A,SumB)
     iqa_forces_grad: Fn(A,SumB)
+    iqa_mu_forces: Mu(A)
     # Edge-level pairwise IQA components
     # iqa_vee_edge: Vee(A,B)
     # iqa_vne_edge: Vne(A,B)
