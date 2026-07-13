@@ -12,6 +12,7 @@ import os
 import shutil
 from typing import TYPE_CHECKING, Optional, Protocol, Union, runtime_checkable
 
+import torch
 from torchtnt.framework.callback import Callback
 from torchtnt.framework.fit import fit
 
@@ -20,10 +21,9 @@ from fairchem.core.common.utils import get_subdirectories_sorted_by_time
 from fairchem.core.components.runner import Runner
 
 if TYPE_CHECKING:
-    import torch
     from torchtnt.framework import EvalUnit, TrainUnit
     from torchtnt.framework.state import State
-    from torchtnt.framework.unit import TTrainUnit
+    from torchtnt.framework.unit import TEvalUnit, TTrainUnit
 
 
 @runtime_checkable
@@ -74,9 +74,12 @@ class TrainCheckpointCallback(Callback):
         self,
         checkpoint_every_n_steps: int,
         max_saved_checkpoints: int = 2,
+        save_best_val_checkpoint: bool = False,
     ):
         self.checkpoint_every_n_steps = checkpoint_every_n_steps
         self.max_saved_checkpoints = max_saved_checkpoints
+        self.save_best_val_checkpoint = save_best_val_checkpoint
+        self.best_val_loss = float("inf")
         self.save_callback = None
         self.load_callback = None
         self.checkpoint_dir = None
@@ -109,6 +112,40 @@ class TrainCheckpointCallback(Callback):
                 for dir, _ in checkpoint_dirs_by_time[: -self.max_saved_checkpoints]:
                     if not os.path.islink(dir):
                         shutil.rmtree(dir)
+
+    def on_eval_epoch_end(self, state: State, unit: TEvalUnit) -> None:
+        if not self.save_best_val_checkpoint:
+            return
+
+        eval_unit = getattr(unit, "eval_unit", None)
+        if eval_unit is None:
+            return
+
+        metrics = getattr(eval_unit, "total_loss_metrics", None)
+        if metrics is None:
+            return
+
+        device = torch.device(distutils.get_device_for_local_rank())
+        total = distutils.all_reduce(metrics.total, average=False, device=device)
+        numel = distutils.all_reduce(metrics.numel, average=False, device=device)
+
+        if numel == 0:
+            return
+
+        val_loss = total / numel
+
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            assert (
+                self.save_callback
+            ), "Must initialize set_runner_callbacks from Runner!"
+            best_path = os.path.join(self.checkpoint_dir, "best_val_checkpoint")
+            self.save_callback(best_path)
+            logging.info(
+                f"New best val/loss: {val_loss:.6f} at step "
+                f"{unit.train_progress.num_steps_completed}, "
+                f"saved to {best_path}"
+            )
 
     def on_train_end(self, state: State, unit: TTrainUnit) -> None:
         if self.checkpoint_every_n_steps is not None:
