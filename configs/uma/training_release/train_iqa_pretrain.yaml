@@ -22,7 +22,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: iqa-decompose-local-k4l2-light
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_train-with_ref
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -30,7 +30,7 @@ job:
     project: iqa
 
 # --- Runtime Hyperparameters ---
-steps: 100000
+epochs: 300
 bf16: True
 
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
@@ -54,12 +54,12 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_kinetic: 2.60388  # old: 1000.12
-normalizer_rmsd_iqa_kinetic: 16.0932  # old: 2022.36
-normalizer_mean_iqa_vne: -27.7423  # old: -2386.82
-normalizer_rmsd_iqa_vne: 89.9088  # old: 4815.85
-normalizer_mean_iqa_vee: 32.162  # old: 392.778
-normalizer_rmsd_iqa_vee: 73.7236  # old: 772.831
+normalizer_mean_iqa_kinetic: 2.50507  # old: 1000.12
+normalizer_rmsd_iqa_kinetic: 21.4319  # old: 2022.36
+normalizer_mean_iqa_vne: -26.9547  # old: -2386.82
+normalizer_rmsd_iqa_vne: 94.6618  # old: 4815.85
+normalizer_mean_iqa_vee: 31.3875 # old: 392.778
+normalizer_rmsd_iqa_vee: 72.3848  # old: 772.831
 # normalizer_mean_iqa_vee_c: 493.686
 # normalizer_rmsd_iqa_vee_c: 909.29
 # normalizer_mean_iqa_vee_x: -100.909
@@ -71,14 +71,14 @@ iqa_vee_coef: 1.0
 # iqa_vee_x_coef: 1.0
 #iqa_inter_a_coef: 0.0
 # Edge-level subterm normalizers (halved for directed graph; from 10k molecules)
-normalizer_mean_iqa_vne_ab: -42.3197
-normalizer_rmsd_iqa_vne_ab: 74.067
-normalizer_mean_iqa_vee_ab: 40.7689
-normalizer_rmsd_iqa_vee_ab: 72.4889
-normalizer_mean_iqa_ven_ab: -42.3197
-normalizer_rmsd_iqa_ven_ab: 74.067
-normalizer_mean_iqa_vnn_ab: 43.1726
-normalizer_rmsd_iqa_vnn_ab: 73.5147
+normalizer_mean_iqa_vne_ab: -41.9057
+normalizer_rmsd_iqa_vne_ab: 74.5099
+normalizer_mean_iqa_vee_ab: 40.3855
+normalizer_rmsd_iqa_vee_ab: 72.8833
+normalizer_mean_iqa_ven_ab: -41.9057
+normalizer_rmsd_iqa_ven_ab: 74.5099
+normalizer_mean_iqa_vnn_ab: 42.7357
+normalizer_rmsd_iqa_vnn_ab: 74.0831
 # Edge-level subterm coefficients
 iqa_vne_ab_coef: 1.0
 iqa_vee_ab_coef: 1.0
@@ -189,14 +189,14 @@ runner:
       warmup_factor: 0.2
       warmup_epochs: 0.01
       lr_min_factor: 0.01
-      epochs: null
-      steps: ${steps}
+      epochs: ${epochs}
+      steps: null
     print_every: 10
     clip_grad_norm: 100
     bf16: ${bf16}
-  max_epochs: null
-  max_steps: ${steps}
   evaluate_every_n_steps: 500
+  max_epochs: ${epochs}
+  max_steps: null
   callbacks:
     - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
       job_config: ${job}

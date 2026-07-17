@@ -11,8 +11,8 @@ dataloader_workers: 0
 debug: false
 mem_gb: "0"
 cpus_per_task: 4
-timeout_hr: "48"
-partition: clara
+timeout_hr: "96"
+partition: clara-long
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
