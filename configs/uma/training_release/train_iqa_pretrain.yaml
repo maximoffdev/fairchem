@@ -28,7 +28,7 @@ job:
     project: iqa
 
 # --- Runtime Hyperparameters ---
-steps: 100000
+epochs: 300
 bf16: True
 
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
@@ -126,13 +126,13 @@ runner:
       warmup_factor: 0.2
       warmup_epochs: 0.01
       lr_min_factor: 0.01
-      epochs: null
-      steps: ${steps}
+      epochs: ${epochs}
+      steps: null
     print_every: 10
     clip_grad_norm: 100
     bf16: ${bf16}
-  max_epochs: null
-  max_steps: ${steps}
+  max_epochs: ${epochs}
+  max_steps: null
   evaluate_every_n_steps: 500
   callbacks:
     - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
