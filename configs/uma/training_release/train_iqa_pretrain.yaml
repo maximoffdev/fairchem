@@ -54,12 +54,14 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_kinetic: 2.50507  # old: 1000.12
-normalizer_rmsd_iqa_kinetic: 21.4319  # old: 2022.36
-normalizer_mean_iqa_vne: -26.9547  # old: -2386.82
-normalizer_rmsd_iqa_vne: 94.6618  # old: 4815.85
-normalizer_mean_iqa_vee: 31.3875 # old: 392.778
-normalizer_rmsd_iqa_vee: 72.3848  # old: 772.831
+# Atom-level subterm normalizers (residual after isolated-atom element refs;
+# recomputed on full sumformulasplit/train, 1.72M atoms, isolated_atom_elem_refs)
+normalizer_mean_iqa_kinetic: -0.00396051  # old: 2.50507
+normalizer_rmsd_iqa_kinetic: 20.0982  # old: 21.4319
+normalizer_mean_iqa_vne: -0.010553  # old: -26.9547
+normalizer_rmsd_iqa_vne: 66.6655  # old: 94.6618
+normalizer_mean_iqa_vee: 0.0101651  # old: 31.3875
+normalizer_rmsd_iqa_vee: 38.4914  # old: 72.3848
 # normalizer_mean_iqa_vee_c: 493.686
 # normalizer_rmsd_iqa_vee_c: 909.29
 # normalizer_mean_iqa_vee_x: -100.909
@@ -70,20 +72,24 @@ iqa_vee_coef: 1.0
 # iqa_vee_c_coef: 1.0
 # iqa_vee_x_coef: 1.0
 #iqa_inter_a_coef: 0.0
-# Edge-level subterm normalizers (halved for directed graph; from 10k molecules)
-normalizer_mean_iqa_vne_ab: -41.9057
-normalizer_rmsd_iqa_vne_ab: 74.5099
-normalizer_mean_iqa_vee_ab: 40.3855
-normalizer_rmsd_iqa_vee_ab: 72.8833
-normalizer_mean_iqa_ven_ab: -41.9057
-normalizer_rmsd_iqa_ven_ab: 74.5099
-normalizer_mean_iqa_vnn_ab: 42.7357
-normalizer_rmsd_iqa_vnn_ab: 74.0831
+# Edge-level subterm normalizers (halved for directed graph; recomputed on
+# full sumformulasplit/train, 26.3M directed edges)
+normalizer_mean_iqa_vne_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_vne_ab: 74.6141  # old: 74.5099
+normalizer_mean_iqa_vee_ab: 40.3791  # old: 40.3855
+normalizer_rmsd_iqa_vee_ab: 72.9996  # old: 72.8833
+normalizer_mean_iqa_ven_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_ven_ab: 74.6141  # old: 74.5099
+# V_nn is deterministic (IQA_Vnn_Analytic_Head outputs the physical value directly),
+# so use an identity normalizer: denorm(x) = x*1 + 0 leaves the value untouched.
+normalizer_mean_iqa_vnn_ab: 0.0  # analytic head; was 42.738 when learned
+normalizer_rmsd_iqa_vnn_ab: 1.0  # analytic head; was 74.1815 when learned
 # Edge-level subterm coefficients
 iqa_vne_ab_coef: 1.0
 iqa_vee_ab_coef: 1.0
 iqa_ven_ab_coef: 1.0
-iqa_vnn_ab_coef: 1.0
+# V_nn is deterministic (analytic head) -> nothing to learn, keep it out of the loss.
+iqa_vnn_ab_coef: 0.0
 
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
@@ -154,8 +160,9 @@ heads:
     node_prediction: false
     edge_prediction: true
     edge_task_name: iqa_ven_ab
+  # V_nn is computed deterministically (Coulomb's law) rather than predicted.
   iqa_vnn_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+    module: fairchem.core.models.uma.escn_md.IQA_Vnn_Analytic_Head
     node_prediction: false
     edge_prediction: true
     edge_task_name: iqa_vnn_ab

@@ -1958,6 +1958,81 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
         return outputs
 
 
+class IQA_Vnn_Analytic_Head(nn.Module, HeadInterface):
+    """Parameter-free, deterministic head for the nuclear-nuclear repulsion subterm.
+
+    Rather than *learning* V_nn(A, B), this head computes it analytically from atom
+    types and positions via Coulomb's law (exact, in atomic units)::
+
+        V_nn(A, B) = Z_A * Z_B / R_AB          [Bohr, Hartree]
+
+    The IQA edge labels store ``V_nn(A, B) / 2`` per *directed* edge, so that summing
+    the two directed edges of a pair (A->B and B->A) recovers the full pair
+    repulsion; ``pair_scale`` (0.5) reproduces that convention. The result depends
+    only on positions and atomic numbers and stays in the autograd graph, so it also
+    yields exact analytic forces.
+
+    Unit handling: model positions are in Angstrom and IQA energy targets are in eV
+    (``IQAPKLDataset`` converts Bohr->Angstrom and Hartree->eV on load), so the
+    Hartree result is rescaled to eV. Pair this head with an *identity* Normalizer
+    (mean=0, rmsd=1) so that ``predict()``'s denormalization leaves the physical
+    value untouched, and set its loss coefficient to 0 (there is nothing to learn).
+    """
+
+    # Must match the unit conventions used by IQAPKLDataset.
+    ANG_TO_BOHR: float = 1.8897261245650618  # 1 Angstrom in Bohr
+    HARTREE_TO_EV: float = 27.211386245988  # 1 Hartree in eV
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        edge_task_name: str = "iqa_vnn_ab",
+        pair_scale: float = 0.5,
+        output_in_ev: bool = True,
+        # Accepted for config symmetry with the learned edge heads; unused here.
+        edge_prediction: bool = True,
+        node_prediction: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.edge_task_name = edge_task_name
+        self.pair_scale = float(pair_scale)
+        self.output_in_ev = bool(output_in_ev)
+
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        if "edge_index" not in emb or "edge_distance_vec" not in emb:
+            raise ValueError(
+                "IQA_Vnn_Analytic_Head requires 'edge_index' and 'edge_distance_vec' "
+                "in emb. Set backbone output_edge_features=True."
+            )
+
+        edge_index = emb["edge_index"]
+        edge_distance_vec = emb["edge_distance_vec"]
+
+        # Pairwise distance in Angstrom. Keep the autograd graph w.r.t. positions
+        # (edge_distance_vec = pos[src] - pos[dst]) so forces stay exact, and compute
+        # in float32 for an accurate Coulomb term even when the backbone runs in bf16.
+        r_ang = torch.linalg.norm(edge_distance_vec.float(), dim=-1)  # (E,)
+        r_bohr = r_ang * self.ANG_TO_BOHR
+
+        z = data["atomic_numbers"].to(r_bohr.dtype)
+        z_src = z[edge_index[0]]
+        z_dst = z[edge_index[1]]
+
+        # V_nn(A, B) / 2 per directed edge, in Hartree.
+        vnn = self.pair_scale * z_src * z_dst / r_bohr
+        if self.output_in_ev:
+            vnn = vnn * self.HARTREE_TO_EV
+
+        # Match the gather behavior of the learned edge heads under graph parallel.
+        if gp_utils.initialized():
+            vnn = gp_utils.gather_from_model_parallel_region(vnn, dim=0)
+
+        return {self.edge_task_name: {"edge_pred": vnn}}
+
+
 class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):
     """Backward-compatible alias for existing configs."""
 
