@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 import random
 import pickle
@@ -87,6 +88,7 @@ class IQAPKLDataset(BaseDataset):
         bohr2ang: bool = True,
         ht2ev: bool = True,
         force_ht2ev: bool = True,
+        charge_key: str = "q_total",
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -95,6 +97,11 @@ class IQAPKLDataset(BaseDataset):
         self.bohr2ang = bohr2ang
         self.ht2ev = ht2ev
         self.force_ht2ev = force_ht2ev
+        # Total molecular charge, fed to the backbone's ChgSpinEmbedding for charge
+        # conditioning. Note the pkls also carry a 'Charge' key, but that is the
+        # per-atom nuclear charge Z, not the system charge -- do not point here at it.
+        self.charge_key = charge_key
+        self._warned_missing_charge = False
         self.name = name
         self.dataset_name = name
         self.dataset_names = [name]
@@ -148,13 +155,22 @@ class IQAPKLDataset(BaseDataset):
         nedges = torch.tensor([E], dtype=torch.long)
         natoms = torch.tensor([N], dtype=torch.long)
         
-        # Load q_total as charge if available
-        q_total = _first_present(d, "q_total")
+        # Total molecular charge -> AtomicData.charge, consumed by ChgSpinEmbedding.
+        q_total = _first_present(d, self.charge_key)
         if q_total is not None:
             charge = torch.tensor([int(q_total)], dtype=torch.long)
         else:
+            # Silently treating charged systems as neutral would poison the
+            # conditioning, so make the fallback loud (once per worker).
+            if not self._warned_missing_charge:
+                self._warned_missing_charge = True
+                logging.warning(
+                    f"charge_key '{self.charge_key}' not found in {path}; "
+                    f"defaulting charge to 0. Available keys: {sorted(d.keys())[:50]}"
+                )
             charge = torch.zeros(1, dtype=torch.long)   # default to neutral
-        
+
+        # All systems in this dataset are closed-shell singlets.
         spin   = torch.zeros(1, dtype=torch.long)   # system spin (int)
         fixed  = torch.zeros(N, dtype=torch.long)   # per-node flags
         tags   = torch.zeros(N, dtype=torch.long)   # per-node tags
