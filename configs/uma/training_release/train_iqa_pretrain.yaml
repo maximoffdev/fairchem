@@ -3,7 +3,7 @@ defaults:
   - dataset: iqa_components
   - tasks: iqa_decompose
   - backbone: K4L2_light
-  - element_refs: iqa_intra_elem_refs
+  - element_refs: iqa_isolated_atom_elem_refs
 
 
 
@@ -22,7 +22,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_train-with_ref
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_new_split_test
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true

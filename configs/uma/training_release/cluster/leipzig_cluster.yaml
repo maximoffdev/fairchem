@@ -1,20 +1,22 @@
 # Use shared storage for multi-node stability.
-data_root_dir: /work2/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
-run_dir: /work2/rh41uvuh-iqa_train_2/iqa
+# data_root_dir: /work2/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
+# run_dir: /work2/rh41uvuh-iqa_train_2/iqa
+data_root_dir: /work2/oo80wopo-IQA/fairchem/sumformulasplit
+run_dir: /work2/oo80wopo-IQA/fairchem/runs
 #run_dir: ${oc.env:PWD}/runs
 account: null
 qos: null
 mode: SLURM
 device: CUDA
-ranks_per_node: 4
+ranks_per_node: 1
 dataloader_workers: 0
 debug: false
 mem_gb: "0"
 cpus_per_task: 4
-timeout_hr: "96"
-partition: clara-long
+timeout_hr: "1"
+partition: clara
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
-cutoff_radius: 7.0   # Å; matched to K10L4 backbone default
+cutoff_radius: 8.0   # Å; matched to K10L4 backbone default
 setup_commands: []
