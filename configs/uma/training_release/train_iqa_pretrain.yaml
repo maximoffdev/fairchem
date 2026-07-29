@@ -22,7 +22,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_new_split_test
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_new_split_long
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true

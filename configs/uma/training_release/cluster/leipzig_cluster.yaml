@@ -8,13 +8,18 @@ account: null
 qos: null
 mode: SLURM
 device: CUDA
-ranks_per_node: 1
+ranks_per_node: 4
 dataloader_workers: 0
 debug: false
-mem_gb: "0"
+# Memory for the whole job, in GiB -> sbatch --mem.
+# Do NOT set 0 ("all node memory"): partition clara caps MaxMemPerCPU=32000 MB, so
+# a 500 GiB request forces Slurm to inflate cpus_per_task 4 -> 16 to keep the ratio
+# legal. srun then aborts on SLURM_CPUS_PER_TASK=16 != SLURM_TRES_PER_TASK=cpu=4.
+# Keep mem_gb <= cpus_per_task * 31.25 GiB (4 CPUs -> 125 GiB) to stay under the cap.
+mem_gb: 64
 cpus_per_task: 4
-timeout_hr: "1"
-partition: clara
+timeout_hr: "96"
+partition: clara-long
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
