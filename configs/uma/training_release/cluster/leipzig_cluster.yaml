@@ -1,6 +1,8 @@
 # Use shared storage for multi-node stability.
-data_root_dir: /work2/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
-run_dir: /work2/rh41uvuh-iqa_train_2/iqa
+# data_root_dir: /work2/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
+# run_dir: /work2/rh41uvuh-iqa_train_2/iqa
+data_root_dir: /work2/oo80wopo-IQA/fairchem/sumformulasplit
+run_dir: /work2/oo80wopo-IQA/fairchem/runs
 #run_dir: ${oc.env:PWD}/runs
 account: null
 qos: null
@@ -9,12 +11,18 @@ device: CUDA
 ranks_per_node: 4
 dataloader_workers: 0
 debug: false
-mem_gb: "0"
+# Memory for the whole job (per node), in GiB -> sbatch --mem.
+# Do NOT set 0 ("all node memory"). clara/clara-long cap MaxMemPerCPU=32000 MB, and
+# when mem/CPU exceeds it Slurm silently inflates the CPU count to keep the ratio
+# legal; srun then aborts with SLURM_CPUS_PER_TASK != SLURM_TRES_PER_TASK. Asking
+# for the whole node's 500 GiB also blocks every other GPU on it, so jobs sit in PD.
+# Ceiling: mem_gb <= ranks_per_node * cpus_per_task * 31.25 GiB (here 4*4 -> 500 GiB).
+mem_gb: 64
 cpus_per_task: 4
 timeout_hr: "96"
 partition: clara-long
 max_atoms: 360
 max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
-cutoff_radius: 7.0   # Å; matched to K10L4 backbone default
+cutoff_radius: 8.0   # Å; matched to K10L4 backbone default
 setup_commands: []
