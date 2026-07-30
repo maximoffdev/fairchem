@@ -3,7 +3,7 @@ defaults:
   - dataset: iqa_components
   - tasks: iqa_decompose
   - backbone: K10L4
-  - element_refs: iso_atom_elem_refs
+  - element_refs: iqa_isolated_atom_elem_refs
   - _self_
 
 job:
@@ -50,10 +50,16 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-normalizer_mean_iqa_intra_a: 6.93503
-normalizer_rmsd_iqa_intra_a: 21.0968
-normalizer_mean_iqa_inter_ab: -0.690065
-normalizer_rmsd_iqa_inter_ab: 2.68932
+# Fit with scripts/iqa_compute_normalizers.py over the sumformulasplit/train split
+# (118977 pkl files, HCNOSPClF_combined_datasets_filtered0.001), eV.
+# intra_a is dereferenced with element_refs.iqa_intra (iqa_isolated_atom_elem_refs.yaml);
+# rerun the script if that element-refs file changes.
+normalizer_mean_iqa_intra_a: -0.00434839
+normalizer_rmsd_iqa_intra_a: 20.0952
+#normalizer_mean_iqa_inter_a: -10.5846
+#normalizer_rmsd_iqa_inter_a: 8.99189
+normalizer_mean_iqa_inter_ab: -0.690637
+normalizer_rmsd_iqa_inter_ab: 2.69112
 iqa_intra_a_coef: 1.0
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
