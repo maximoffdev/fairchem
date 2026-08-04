@@ -22,6 +22,10 @@ iqa_train:
     iqa_vee_ab: Vee(A,B)/2
     iqa_ven_ab: Ven(A,B)/2
     iqa_vnn_ab: Vnn(A,B)/2
+    # dipole_scalar: "|Mu(A)|"
+    # dipole_vector: Mu(A)
+    dipole_intra: Mu_Intra(A)
+    # dipole_bond: Mu_Bond(A)
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -47,3 +51,8 @@ iqa_val:
     iqa_vee_ab: Vee(A,B)/2
     iqa_ven_ab: Ven(A,B)/2
     iqa_vnn_ab: Vnn(A,B)/2
+    # dipole_scalar: "|Mu(A)|"
+    # dipole_vector: Mu(A)
+    dipole_intra: Mu_Intra(A)
+    # dipole_bond: Mu_Bond(A)
+    

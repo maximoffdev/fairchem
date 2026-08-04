@@ -2316,3 +2316,55 @@ class MLP_Stress_Head(nn.Module, HeadInterface):
         stress = compose_tensor(iso_stress.unsqueeze(1), aniso_stress)
 
         return {"stress": stress}
+
+class MLP_Dipole_Scalar_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone) -> None:
+        super().__init__()
+        # Predict the scalar (magnitude) of the dipole moment
+        # no reduce because we want values for every atom
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+
+        # MLP for prediction
+        self.dipole_block = nn.Sequential(
+            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(self.hidden_channels, 1, bias=True)
+        )
+    def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        scalar_features = emb["node_embedding"].narrow(1, 0, 1).squeeze(1)
+        node_dipole = self.dipole_block(scalar_features).squeeze(-1)
+
+        # if parallel calculations used now combining them
+        if gp_utils.initialized():
+            node_dipole = gp_utils.gather_from_model_parallel_region(node_dipole, dim=0)
+        return {"dipole_scalar": node_dipole}
+    
+
+class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone: eSCNMDBackbone, property_name: str) -> None:
+        super().__init__()
+        #head should fit to Mu(A) and Mu_Intra(A)
+        self.property_name = property_name
+        self.sphere_channels = backbone.sphere_channels
+        # SO3_Linear transforms sphere channel, lmax=1 features to vector outputs 
+        # from sphere channels 1 output vector per atom
+        self.linear = SO3_Linear(self.sphere_channels, 1, lmax=1)
+
+       
+    def forward(self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        # Extrahiere L=0 und L=1 (Indizes 0 bis 3)
+        node_features = emb["node_embedding"].narrow(1, 0, 4)
+        res = self.linear(node_features)
+        
+        # Extrahiere den L=1 Anteil (Vektor) -> Indizes 1,2,3
+        vector = res.narrow(1, 1, 3).view(-1, 3).contiguous()
+        
+        if gp_utils.initialized():
+            vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
+            
+        return {self.property_name: vector}
+
