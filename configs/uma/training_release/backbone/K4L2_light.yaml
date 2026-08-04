@@ -6,7 +6,7 @@ use_composition_embedding: true
 use_global_embedding: false
 
 max_num_elements: 100
-sphere_channels: 128
+sphere_channels: 96
 lmax: 2
 mmax: 2
 
@@ -14,18 +14,22 @@ otf_graph: ${otf_graph}
 max_neighbors: ${max_neighbors}
 use_pbc: True
 use_pbc_single: True
+# Only consulted when otf_graph is True: the IQA systems are isolated molecules
+# with a zero cell, so build the radius graph aperiodically (the pbc path needs a
+# real vacuum box and produces NaN cell repetitions here).
+always_use_pbc: False
 
 cutoff: ${cutoff_radius}
-edge_channels: 128
+edge_channels: 96
 distance_function: gaussian
-num_distance_basis: 64
+num_distance_basis: 32
 
-regress_forces: False
+regress_forces: True
 regress_stress: ${regress_stress}
 direct_forces: ${direct_forces}
 
-num_layers: 4
-hidden_channels: 128
+num_layers: 3
+hidden_channels: 96
 norm_type: rms_norm_sh
 act_type: gate
 ff_type: spectral
@@ -35,4 +39,3 @@ cs_emb_grad: True
 dataset_list: ${dataset_list}
 output_edge_features: True  # Required for edge-level IQA predictions
 #activation_checkpointing: True  # Save 50-70% memory by recomputing activations during backward pass
-term_element_refs: ${element_refs}

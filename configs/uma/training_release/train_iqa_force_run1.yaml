@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: iqa_force_run1
+  run_name: iqa_force_run1_test_with_loss_coef-1-1-0-1
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -49,7 +49,7 @@ normalizer_rmsd_iqa_force: 1.0
 iqa_intra_a_coef: 1.0
 iqa_inter_ab_coef: 1.0
 
-force_direct_coef: 1.0
+force_direct_coef: 0.0
 force_grad_coef: 1.0
 force_loss_reduction: mean
 edge_energy_mode: half

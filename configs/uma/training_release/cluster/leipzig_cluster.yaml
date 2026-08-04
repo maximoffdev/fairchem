@@ -11,18 +11,17 @@ device: CUDA
 ranks_per_node: 4
 dataloader_workers: 0
 debug: false
-# Memory for the whole job (per node), in GiB -> sbatch --mem.
-# Do NOT set 0 ("all node memory"). clara/clara-long cap MaxMemPerCPU=32000 MB, and
-# when mem/CPU exceeds it Slurm silently inflates the CPU count to keep the ratio
-# legal; srun then aborts with SLURM_CPUS_PER_TASK != SLURM_TRES_PER_TASK. Asking
-# for the whole node's 500 GiB also blocks every other GPU on it, so jobs sit in PD.
-# Ceiling: mem_gb <= ranks_per_node * cpus_per_task * 31.25 GiB (here 4*4 -> 500 GiB).
+# Memory for the whole job, in GiB -> sbatch --mem.
+# Do NOT set 0 ("all node memory"): partition clara caps MaxMemPerCPU=32000 MB, so
+# a 500 GiB request forces Slurm to inflate cpus_per_task 4 -> 16 to keep the ratio
+# legal. srun then aborts on SLURM_CPUS_PER_TASK=16 != SLURM_TRES_PER_TASK=cpu=4.
+# Keep mem_gb <= cpus_per_task * 31.25 GiB (4 CPUs -> 125 GiB) to stay under the cap.
 mem_gb: 64
 cpus_per_task: 4
 timeout_hr: "96"
 partition: clara-long
-max_atoms: 360
-max_neighbors: 30    # K4L2 is small enough to handle full neighbor count
+max_atoms: 450
+max_neighbors: 20    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
-cutoff_radius: 8.0   # Å; matched to K10L4 backbone default
+cutoff_radius: 7.0   # Å; matched to K10L4 backbone default
 setup_commands: []

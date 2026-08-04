@@ -199,7 +199,7 @@
     element_references:
       _target_: torch.DoubleTensor
       _args_:
-        - ${element_refs.iqa_intra}
+        - ${element_refs.iqa_kinetic}
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
@@ -344,6 +344,69 @@
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_inter_ab:
-      iqa_combined_head: pred
-      label_key: edge_pred
+    iqa_vne_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_vne_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_ab}
+    rmsd: ${normalizer_rmsd_iqa_vee_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vee_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_vee_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_ven_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_ven_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_ven_ab}
+    rmsd: ${normalizer_rmsd_iqa_ven_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_ven_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_ven_ab
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vnn_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vnn_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vnn_ab}
+    rmsd: ${normalizer_rmsd_iqa_vnn_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+    iqa_vnn_ab_head:
+      prediction_key: edge_pred
+      label_key: iqa_vnn_ab

@@ -2,9 +2,11 @@ defaults:
   - cluster: local
   - dataset: iqa_components
   - tasks: iqa_decompose
-  - backbone: K10L4
+  - backbone: K4L2_light
   - element_refs: iqa_isolated_atom_elem_refs
-  - _self_
+
+
+
 
 job:
   device_type: ${cluster.device}
@@ -20,7 +22,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_new_split_long
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -61,19 +63,42 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-# Fit with scripts/iqa_compute_normalizers.py over the sumformulasplit/train split
-# (118977 pkl files, HCNOSPClF_combined_datasets_filtered0.001), eV.
-# intra_a is dereferenced with element_refs.iqa_intra (iqa_isolated_atom_elem_refs.yaml);
-# rerun the script if that element-refs file changes.
-normalizer_mean_iqa_intra_a: -0.00434839
-normalizer_rmsd_iqa_intra_a: 20.0952
-#normalizer_mean_iqa_inter_a: -10.5846
-#normalizer_rmsd_iqa_inter_a: 8.99189
-normalizer_mean_iqa_inter_ab: -0.690637
-normalizer_rmsd_iqa_inter_ab: 2.69112
-iqa_intra_a_coef: 1.0
-#iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
-iqa_inter_ab_coef: 1.0
+# Atom-level subterm normalizers (residual after isolated-atom element refs;
+# recomputed on full sumformulasplit/train, 1.72M atoms, isolated_atom_elem_refs)
+normalizer_mean_iqa_kinetic: -0.00396051  # old: 2.50507
+normalizer_rmsd_iqa_kinetic: 20.0982  # old: 21.4319
+normalizer_mean_iqa_vne: -0.010553  # old: -26.9547
+normalizer_rmsd_iqa_vne: 66.6655  # old: 94.6618
+normalizer_mean_iqa_vee: 0.0101651  # old: 31.3875
+normalizer_rmsd_iqa_vee: 38.4914  # old: 72.3848
+# normalizer_mean_iqa_vee_c: 493.686
+# normalizer_rmsd_iqa_vee_c: 909.29
+# normalizer_mean_iqa_vee_x: -100.909
+# normalizer_rmsd_iqa_vee_x: 140.044
+iqa_kinetic_coef: 1.0
+iqa_vne_coef: 1.0
+iqa_vee_coef: 1.0
+# iqa_vee_c_coef: 1.0
+# iqa_vee_x_coef: 1.0
+#iqa_inter_a_coef: 0.0
+# Edge-level subterm normalizers (halved for directed graph; recomputed on
+# full sumformulasplit/train, 26.3M directed edges)
+normalizer_mean_iqa_vne_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_vne_ab: 74.6141  # old: 74.5099
+normalizer_mean_iqa_vee_ab: 40.3791  # old: 40.3855
+normalizer_rmsd_iqa_vee_ab: 72.9996  # old: 72.8833
+normalizer_mean_iqa_ven_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_ven_ab: 74.6141  # old: 74.5099
+# V_nn is deterministic (IQA_Vnn_Analytic_Head outputs the physical value directly),
+# so use an identity normalizer: denorm(x) = x*1 + 0 leaves the value untouched.
+normalizer_mean_iqa_vnn_ab: 0.0  # analytic head; was 42.738 when learned
+normalizer_rmsd_iqa_vnn_ab: 1.0  # analytic head; was 74.1815 when learned
+# Edge-level subterm coefficients
+iqa_vne_ab_coef: 1.0
+iqa_vee_ab_coef: 1.0
+iqa_ven_ab_coef: 1.0
+# V_nn is deterministic (analytic head) -> nothing to learn, keep it out of the loss.
+iqa_vnn_ab_coef: 0.0
 
 # --- Dataset Setup ---
 dataset_list: ["iqa_pkl"]
@@ -185,9 +210,9 @@ runner:
     print_every: 10
     clip_grad_norm: 100
     bf16: ${bf16}
+  evaluate_every_n_steps: 500
   max_epochs: ${epochs}
   max_steps: null
-  evaluate_every_n_steps: 500
   callbacks:
     - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
       job_config: ${job}

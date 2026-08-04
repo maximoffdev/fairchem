@@ -48,6 +48,7 @@ from fairchem.core.common.utils import StrEnum
 from fairchem.core.components.train.train_runner import Checkpointable
 from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.datasets.collaters.mt_collater import MTCollater
+from fairchem.core.modules.edge_matching import EdgeAlignment, build_edge_alignment
 from fairchem.core.modules.normalization.element_references import (  # noqa: TCH001
     ElementReferences,
 )
@@ -171,7 +172,80 @@ def initialize_finetuning_model(
     return model
 
 
-def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
+def _predicted_edge_index(
+    predictions: dict[str, torch.Tensor], task: Task
+) -> torch.Tensor | None:
+    """The graph an edge head predicted on, if it reported one."""
+    task_predictions = predictions[task.name]
+    if not isinstance(task_predictions, dict):
+        return None
+    return task_predictions.get("edge_index")
+
+
+def get_edge_alignment(
+    batch: AtomicData, predictions: dict[str, torch.Tensor], task: Task
+) -> EdgeAlignment | None:
+    """Map an edge task's predictions onto the dataset's edge labels.
+
+    Edge heads predict one value per edge of the graph the *backbone* ran on. With
+    `otf_graph: False` that is the dataset's own `edge_index`, so predictions and
+    labels line up row-for-row and no mapping is needed (None is returned). With
+    `otf_graph: True` the backbone builds a radius graph, a differently ordered
+    subset of the dataset edges, and the labels have to be re-indexed onto it -- see
+    `fairchem.core.modules.edge_matching`.
+    """
+    if task.level != "edge":
+        return None
+
+    edge_index_model = _predicted_edge_index(predictions, task)
+    if edge_index_model is None:
+        # Head did not report its graph: assume it ran on the dataset's edges.
+        return None
+
+    if edge_index_model.shape[1] == int(batch.nedges.sum()) and (
+        "edge_index" not in batch or torch.equal(edge_index_model, batch.edge_index)
+    ):
+        return None
+
+    return build_edge_alignment(
+        edge_index_model,
+        batch.batch,
+        batch.natoms,
+        edge_index_data=batch.edge_index if "edge_index" in batch else None,
+    )
+
+
+def get_edge_alignments(
+    batch: AtomicData, predictions: dict[str, torch.Tensor], tasks: Sequence[Task]
+) -> dict[str, EdgeAlignment | None]:
+    """Same as above but for a list of tasks, reusing the mapping across edge tasks
+    that share the same graph (all heads read the graph off the same backbone)."""
+    alignments: dict[str, EdgeAlignment | None] = {}
+    cache: dict[int, EdgeAlignment | None] = {}
+    for task in tasks:
+        if task.level != "edge":
+            continue
+        edge_index_model = _predicted_edge_index(predictions, task)
+        key = -1 if edge_index_model is None else edge_index_model.data_ptr()
+        if key not in cache:
+            cache[key] = get_edge_alignment(batch, predictions, task)
+        alignments[task.name] = cache[key]
+    return alignments
+
+
+def get_task_target(
+    batch: AtomicData, task: Task, edge_alignment: EdgeAlignment | None = None
+) -> torch.Tensor:
+    """The labels for `task`; for edge tasks, re-indexed onto the model's graph."""
+    target = batch[task.name]
+    if edge_alignment is not None:
+        target = edge_alignment.apply(target)
+    return target
+
+
+def get_output_mask(
+    batch: AtomicData, task: Task, edge_alignment: EdgeAlignment | None = None
+) -> dict[str, torch.Tensor]:
     """Get a dictionary of boolean masks for each task and dataset in a batch.
 
     Comment(@abhshkdz): Structures in our `batch` are a mix from various
@@ -186,7 +260,8 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
     indexing map. s.t. we can index like batch.oc20_forces[oc20_map].
     """
 
-    output_masks = {task.name: torch.isfinite(batch[task.name])}
+    target = get_task_target(batch, task, edge_alignment)
+    output_masks = {task.name: torch.isfinite(target)}
     if "forces" in task.name:
         output_masks[task.name] = output_masks[task.name].all(dim=1)
 
@@ -207,7 +282,10 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
             )
         elif task.level == "edge":
             # expand per-graph mask (B,) → (E,)
-            dset_mask = torch.repeat_interleave(dset_mask, batch.nedges.long())
+            if edge_alignment is not None:
+                dset_mask = dset_mask[edge_alignment.edge_system]
+            else:
+                dset_mask = torch.repeat_interleave(dset_mask, batch.nedges.long())
             # Ensure mask is at least 1D after checking finite values
             if output_masks[task.name].dim() > 1:
                 output_masks[task.name] = output_masks[task.name].all(dim=-1)
@@ -220,12 +298,17 @@ def get_output_mask(batch: AtomicData, task: Task) -> dict[str, torch.Tensor]:
 
 
 def get_output_masks(
-    batch: AtomicData, tasks: Sequence[Task]
+    batch: AtomicData,
+    tasks: Sequence[Task],
+    edge_alignments: dict[str, EdgeAlignment | None] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Same as above but for a list of tasks."""
+    edge_alignments = edge_alignments or {}
     output_masks = {}
     for task in tasks:
-        output_masks.update(get_output_mask(batch, task))
+        output_masks.update(
+            get_output_mask(batch, task, edge_alignments.get(task.name))
+        )
 
     return output_masks
 
@@ -248,13 +331,16 @@ def compute_loss(
     num_atoms_in_batch = batch.natoms.sum()
 
     free_mask = batch.fixed == 0
-    output_masks = get_output_masks(batch, tasks)
+    # edge labels are ordered by the dataset's edge_index; if the model built its
+    # graph on the fly they have to be re-indexed onto it before comparing
+    edge_alignments = get_edge_alignments(batch, predictions, tasks)
+    output_masks = get_output_masks(batch, tasks, edge_alignments)
 
     loss_dict = {}
     denorm_loss_dict = {}
     for task in tasks:
         # TODO this might be a very expensive clone
-        target = batch[task.name].clone()
+        target = get_task_target(batch, task, edge_alignments.get(task.name)).clone()
         output_mask = output_masks[task.name]
 
         # element references are applied to the target before normalization
@@ -279,7 +365,13 @@ def compute_loss(
             pred_for_task = pred_for_task.view(num_atoms_in_batch, -1)
         elif task.level == "edge":
             # Edge-level predictions: shape should be [num_edges, feature_dim]
-            num_edges_in_batch = batch.nedges.sum()
+            # (edges of the model's graph, which is the dataset's unless otf_graph)
+            edge_alignment = edge_alignments.get(task.name)
+            num_edges_in_batch = (
+                batch.nedges.sum()
+                if edge_alignment is None
+                else edge_alignment.num_edges
+            )
             pred_for_task = pred_for_task.view(num_edges_in_batch, -1)
         else:
             pred_for_task = pred_for_task.view(batch_size, -1)
@@ -294,13 +386,16 @@ def compute_loss(
             mult_mask=mult_mask,
             natoms=batch.natoms,
         )
-        # Denormalized loss for logging (in physical units)
+        # Denormalized loss for logging (in physical units, without coefficient)
         denorm_loss_dict[task.name] = task.loss_fn(
             task.normalizer.denorm(pred_for_task.detach()),
             task.normalizer.denorm(target.detach()),
             mult_mask=mult_mask,
             natoms=batch.natoms,
         )
+        coeff = getattr(task.loss_fn, "coefficient", 1.0)
+        if coeff != 0:
+            denorm_loss_dict[task.name] = denorm_loss_dict[task.name] / coeff
 
     # Sanity check to make sure the compute graph is correct.
     for lc in loss_dict.values():
@@ -329,7 +424,8 @@ def compute_metrics(
     """
     # output masks include task level mask, and task.dataset level masks.
     mask_key = task.name if dataset_name is None else f"{dataset_name}.{task.name}"
-    output_mask = get_output_mask(batch, task)[mask_key]
+    edge_alignment = get_edge_alignment(batch, predictions, task)
+    output_mask = get_output_mask(batch, task, edge_alignment)[mask_key]
 
     natoms = torch.repeat_interleave(batch.natoms, batch.natoms)
     if task.level == "atom":
@@ -352,7 +448,7 @@ def compute_metrics(
     if output_size == 0:
         return {metric_name: Metrics() for metric_name in task.metrics}
 
-    target_masked = batch[task.name][output_mask]
+    target_masked = get_task_target(batch, task, edge_alignment)[output_mask]
     pred = predictions[task.name][task.property].clone()
     # denormalize the prediction
     pred = task.normalizer.denorm(pred)
