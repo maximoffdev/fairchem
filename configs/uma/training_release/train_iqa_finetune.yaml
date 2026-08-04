@@ -1,7 +1,7 @@
 defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_components
-  - tasks: iqa_decompose
+  - tasks: iqa_decompose_subterms
   - element_refs: iso_atom_elem_refs
   - _self_
 
