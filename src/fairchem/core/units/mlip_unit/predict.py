@@ -67,6 +67,17 @@ def collate_predictions(predict_fn):
                         preds[task.name][data.batch == i]
                     )
                 elif task.level == "edge":
+                    if preds[task.name].shape[0] != int(data.nedges.sum()):
+                        # The model built its graph on the fly, so per-edge outputs
+                        # are not ordered by data.edge_index and cannot be split
+                        # per system with data.nedges.
+                        raise RuntimeError(
+                            f"Edge task '{task.name}' returned "
+                            f"{preds[task.name].shape[0]} predictions for a batch with "
+                            f"{int(data.nedges.sum())} edges. Collated prediction "
+                            "requires the model to run on the input graph: set "
+                            "InferenceSettings.external_graph_gen=True (otf_graph off)."
+                        )
                     if edge_batch is None:
                         edge_counts = data.nedges.to(data.batch.device)
                         edge_batch = torch.repeat_interleave(

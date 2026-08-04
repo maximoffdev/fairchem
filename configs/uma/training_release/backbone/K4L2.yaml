@@ -20,7 +20,7 @@ edge_channels: 128
 distance_function: gaussian
 num_distance_basis: 64
 
-regress_forces: True
+regress_forces: False
 regress_stress: ${regress_stress}
 direct_forces: ${direct_forces}
 

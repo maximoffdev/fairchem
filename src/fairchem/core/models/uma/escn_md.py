@@ -565,6 +565,9 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         if self.output_edge_features:
             out["edge_embedding"] = x_edge
             out["edge_index"] = graph_dict["edge_index"]
+            # under graph parallel edge_index is this rank's partition, while per-edge
+            # head outputs are gathered back to the full graph
+            out["edge_index_full"] = graph_dict["edge_index_full"]
             out["edge_distance_vec"] = graph_dict["edge_distance_vec"]
 
         return out
@@ -1174,6 +1177,18 @@ class IQA_Edge_Head_Equivariant(nn.Module, HeadInterface):
         return {"pred": pred}
 
 
+def _predicted_edge_index(emb: dict[str, torch.Tensor]) -> torch.Tensor:
+    """The edge_index that per-edge predictions are indexed by.
+
+    Edge heads run on the graph the backbone built: the dataset's edge_index when
+    ``otf_graph=False``, an on-the-fly radius graph otherwise. Reporting it alongside
+    the predictions lets the loss re-index the edge labels onto that graph
+    (see ``fairchem.core.modules.edge_matching``). Under graph parallel the per-edge
+    predictions are gathered back to the full graph, so report the full edge_index.
+    """
+    return emb.get("edge_index_full", emb["edge_index"])
+
+
 class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
     """SO(2)-equivariant graph attention head for joint node/edge prediction.
 
@@ -1631,8 +1646,13 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             edge_pred = self._squeeze_scalar_output(out_embedding_edges)
             if gp_utils.initialized():
                 edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
-            # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key
-            output[self.edge_task_name] = {"edge_pred": edge_pred}
+            # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key.
+            # edge_index rides along so the loss can match the labels to the graph
+            # the prediction was made on (see _predicted_edge_index).
+            output[self.edge_task_name] = {
+                "edge_pred": edge_pred,
+                "edge_index": _predicted_edge_index(emb),
+            }
 
         # === EBDM-origin: Aggregate edge messages to nodes ===
         # Sum all incoming edge messages for each target node. This is the key
@@ -1908,7 +1928,10 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             edge_pred = self._squeeze_scalar_output(out_embedding_edges)
             if gp_utils.initialized():
                 edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
-            outputs[self.edge_task_name] = {"edge_pred": edge_pred}
+            outputs[self.edge_task_name] = {
+                "edge_pred": edge_pred,
+                "edge_index": _predicted_edge_index(emb),
+            }
 
         # aggregate to nodes
         x_nodes = torch_geometric.utils.scatter(
@@ -2030,7 +2053,12 @@ class IQA_Vnn_Analytic_Head(nn.Module, HeadInterface):
         if gp_utils.initialized():
             vnn = gp_utils.gather_from_model_parallel_region(vnn, dim=0)
 
-        return {self.edge_task_name: {"edge_pred": vnn}}
+        return {
+            self.edge_task_name: {
+                "edge_pred": vnn,
+                "edge_index": _predicted_edge_index(emb),
+            }
+        }
 
 
 class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):
@@ -2130,7 +2158,8 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         outputs[self.node_task_name] = {"node_pred": intra_pred}
         if self.edge_task_name in edge_outputs:
             edge_pred = edge_outputs[self.edge_task_name]["edge_pred"]
-            outputs[self.edge_task_name] = {"edge_pred": edge_pred}
+            # keep edge_index so the loss can match labels to the predicted graph
+            outputs[self.edge_task_name] = dict(edge_outputs[self.edge_task_name])
         else:
             edge_pred = None
 

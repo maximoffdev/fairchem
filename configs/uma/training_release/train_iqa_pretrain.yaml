@@ -36,7 +36,16 @@ bf16: True
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
 moe_layer_type: pytorch
 num_moe_experts: ${cluster.num_moe_experts}
-otf_graph: False
+# False: train on the dataset's complete edge graph (labels line up row-for-row).
+# True: the backbone builds a radius graph (cutoff_radius/max_neighbors) instead and
+# the edge labels are re-indexed onto it for the loss, dropping pairs outside the
+# cutoff -- see fairchem.core.modules.edge_matching.
+
+# dataset     systems    atoms | avg@5A max@5A | avg@6A max@6A | avg@7A max@7A | avg@8A max@8A
+# test set      11740   172689 |  5.543     17 |  7.495     22 |  9.400     27 | 11.058     31
+# 1UAO              1      138 |  7.797     13 | 11.638     21 | 16.261     28 | 22.058     39
+
+otf_graph: True
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
