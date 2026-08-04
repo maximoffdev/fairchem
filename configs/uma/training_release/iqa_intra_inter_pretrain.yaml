@@ -1,7 +1,7 @@
 defaults:
-  - cluster: local
+  - cluster: leipzig_cluster
   - dataset: iqa_components
-  - tasks: iqa_decompose
+  - tasks: iqa_decompose_intra_inter
   - backbone: K10L4
   - element_refs: iqa_isolated_atom_elem_refs
   - _self_
@@ -25,7 +25,7 @@ job:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
     entity: lamerslab
-    project: dipole_training
+    project: iqa
 
 # --- Runtime Hyperparameters ---
 epochs: 300
@@ -34,26 +34,15 @@ bf16: True
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
 moe_layer_type: pytorch
 num_moe_experts: ${cluster.num_moe_experts}
-# False: train on the dataset's complete edge graph (labels line up row-for-row).
-# True: the backbone builds a radius graph (cutoff_radius/max_neighbors) instead and
-# the edge labels are re-indexed onto it for the loss, dropping pairs outside the
-# cutoff -- see fairchem.core.modules.edge_matching.
-
-# dataset     systems    atoms | avg@5A max@5A | avg@6A max@6A | avg@7A max@7A | avg@8A max@8A
-# test set      11740   172689 |  5.543     17 |  7.495     22 |  9.400     27 | 11.058     31
-# 1UAO              1      138 |  7.797     13 | 11.638     21 | 16.261     28 | 22.058     39
-
-otf_graph: True
+otf_graph: False
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
 direct_forces: False
 
-# iqa_kinetic_coef: 0.2
-# iqa_vne_coef: 0.2
-# iqa_vee_coef: 0.2
-# iqa_vee_c_coef: 0.2
-# iqa_vee_x_coef: 0.2
+# iqa_kinetic_coef: 1.0
+# iqa_vne_coef: 1.0
+# iqa_vee_coef: 1.0
 # iqa_inter_coef: 1.0
 # # Edge-level coefficients
 # iqa_inter_edge_coef: 1.0
@@ -111,45 +100,8 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  # Dedicated heads for intra-atomic subterms
-  iqa_kinetic_head:
+  iqa_combined_head:
     module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_kinetic
-  iqa_vne_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_vne
-  iqa_vee_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_vee
-
-  # Dedicated heads for edge-level inter subterms
-  iqa_vne_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_vne_ab
-  iqa_vee_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_vee_ab
-  iqa_ven_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_ven_ab
-  # V_nn is computed deterministically (Coulomb's law) rather than predicted.
-  iqa_vnn_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Vnn_Analytic_Head
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_vnn_ab
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
@@ -177,8 +129,8 @@ runner:
     cosine_lr_scheduler_fn:
       _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
       _partial_: true
-      warmup_factor: 0.2 
-      warmup_epochs: 0.01 #maybe increase to 0.05-0.1?
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
       lr_min_factor: 0.01
       epochs: ${epochs}
       steps: null

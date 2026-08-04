@@ -190,7 +190,7 @@
 #       label_key: iqa_vnn_edge
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_kinetic
+  name: iqa_intra_a
   level: atom
   property: node_pred
   datasets: ${dataset_list}
@@ -204,131 +204,20 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_kinetic_coef}
+    coefficient: ${iqa_intra_a_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_kinetic}
-    rmsd: ${normalizer_rmsd_iqa_kinetic}
+    mean: ${normalizer_mean_iqa_intra_a}
+    rmsd: ${normalizer_rmsd_iqa_intra_a}
   out_spec:
     dim: [1]
     dtype: float32
-    iqa_kinetic_head:
+    iqa_combined_head:
       prediction_key: node_pred
-      label_key: iqa_kinetic
+      label_key: iqa_intra_a
 
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_vne
-  level: atom
-  property: node_pred
-  datasets: ${dataset_list}
-  element_references:
-    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-    element_references:
-      _target_: torch.DoubleTensor
-      _args_:
-        - ${element_refs.iqa_vne}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_vne_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_vne}
-    rmsd: ${normalizer_rmsd_iqa_vne}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_vne_head:
-      prediction_key: node_pred
-      label_key: iqa_vne
-
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_vee
-  level: atom
-  property: node_pred
-  datasets: ${dataset_list}
-  element_references:
-    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-    element_references:
-      _target_: torch.DoubleTensor
-      _args_:
-        - ${element_refs.iqa_vee}
-  loss_fn:
-    _target_: fairchem.core.modules.loss.DDPMTLoss
-    loss_fn:
-      _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_vee_coef}
-  normalizer:
-    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_vee}
-    rmsd: ${normalizer_rmsd_iqa_vee}
-  out_spec:
-    dim: [1]
-    dtype: float32
-    iqa_vee_head:
-      prediction_key: node_pred
-      label_key: iqa_vee
-
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_vee_c
-#   level: atom
-#   property: node_pred
-#   datasets: ${dataset_list}
-#   element_references:
-#     _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-#     element_references:
-#       _target_: torch.DoubleTensor
-#       _args_:
-#         - ${element_refs.iqa_vee_c}
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_vee_c_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: ${normalizer_mean_iqa_vee_c}
-#     rmsd: ${normalizer_rmsd_iqa_vee_c}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_combined_head:
-#       prediction_key: node_pred
-#       label_key: iqa_vee_c
-# 
-# - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-#   name: iqa_vee_x
-#   level: atom
-#   property: node_pred
-#   datasets: ${dataset_list}
-#   element_references:
-#     _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
-#     element_references:
-#       _target_: torch.DoubleTensor
-#       _args_:
-#         - ${element_refs.iqa_vee_x}
-#   loss_fn:
-#     _target_: fairchem.core.modules.loss.DDPMTLoss
-#     loss_fn:
-#       _target_: fairchem.core.modules.loss.MAELoss
-#     coefficient: ${iqa_vee_x_coef}
-#   normalizer:
-#     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-#     mean: ${normalizer_mean_iqa_vee_x}
-#     rmsd: ${normalizer_rmsd_iqa_vee_x}
-#   out_spec:
-#     dim: [1]
-#     dtype: float32
-#     iqa_combined_head:
-#       prediction_key: node_pred
-#       label_key: iqa_vee_x
-
-# iqa_intra_a and iqa_inter_ab aggregates are not predicted directly.
-# They can be recomputed as the sum of their respective subterms.
-
-- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: iqa_vne_ab
+  name: iqa_inter_ab
   level: edge
   property: edge_pred
   datasets: ${dataset_list}
@@ -336,11 +225,11 @@
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
-    coefficient: ${iqa_vne_ab_coef}
+    coefficient: ${iqa_inter_ab_coef}
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_vne_ab}
-    rmsd: ${normalizer_rmsd_iqa_vne_ab}
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
   out_spec:
     dim: [1]
     dtype: float32
