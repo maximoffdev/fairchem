@@ -1,6 +1,6 @@
 defaults:
   - cluster: leipzig_cluster
-  - dataset: iqa_components
+  - dataset: iqa_intra_inter
   - tasks: iqa_decompose_intra_inter
   - backbone: K10L4
   - element_refs: iqa_isolated_atom_elem_refs
@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref
+  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref_100neighbors_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true

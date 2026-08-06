@@ -143,19 +143,33 @@ class IQAPKLDataset(BaseDataset):
         labels: Dict[str, torch.Tensor] = {}
         #new logic for tensor labels
         for out_key, in_key in self.key_mapping.items():
-            if in_key in d:
-                val = d[in_key]
-                t = torch.as_tensor(val, dtype=pos.dtype)
-                
-                # If per-atom vector (N,3) -> keep
-                if t.ndim == 2 and t.shape[1] == 3:
-                    labels[out_key] = t
-                #if scalar -> tensor with shape (1,)
-                elif t.ndim == 1 or (t.ndim == 2 and t.shape[1] == 1):
-                    labels[out_key] = _tensor1d(t)
-                # single scalar
-                else:
-                    labels[out_key] = t.view(1) if t.ndim == 0 else t
+            if in_key not in d:
+                # Silently dropping the label yields an AtomicData whose key set differs
+                # from its batch mates; atomicdata_list_to_batch() takes the key set from
+                # the first sample only, so this resurfaces much later as an opaque
+                # "AtomicData object has no attribute '<out_key>'" during collation.
+                if not self.allow_missing_labels:
+                    raise KeyError(
+                        f"key_mapping entry '{out_key}' -> '{in_key}' is missing from {path}. "
+                        f"All samples must carry the same labels. Either drop the entry from "
+                        f"the dataset config, remove/repair the file, or pass "
+                        f"allow_missing_labels=true to skip it (batching will then fail if "
+                        f"other samples in the same batch do have the label)."
+                    )
+                continue
+
+            val = d[in_key]
+            t = torch.as_tensor(val, dtype=pos.dtype)
+
+            # If per-atom vector (N,3) -> keep
+            if t.ndim == 2 and t.shape[1] == 3:
+                labels[out_key] = t
+            #if scalar -> tensor with shape (1,)
+            elif t.ndim == 1 or (t.ndim == 2 and t.shape[1] == 1):
+                labels[out_key] = _tensor1d(t)
+            # single scalar
+            else:
+                labels[out_key] = t.view(1) if t.ndim == 0 else t
 
         # user key mapping (e.g., {"energy": "e_total"})
         # for out_key, in_key in self.key_mapping.items():          #old version, not suited for tensors

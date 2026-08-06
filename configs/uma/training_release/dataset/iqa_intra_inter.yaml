@@ -1,0 +1,58 @@
+# Same as iqa_components.yaml, minus the dipole labels.
+#
+# One training pkl ([OM25]_mol_3930732.pkl) is missing Mu_Intra(A) while all other
+# 118976 do have it. IQAPKLDataset maps labels per file, so that sample came out
+# without `dipole_intra` and atomicdata_list_to_batch() -- which reads the key set off
+# the first sample of the batch only -- died with
+#   AttributeError: 'AtomicData' object has no attribute 'dipole_intra'
+# The intra/inter task (tasks/iqa_decompose_intra_inter.yaml) never consumes the
+# dipole labels, so they are dropped here. Dipole runs keep using iqa_components.yaml.
+iqa_train:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/train
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone
+  charge_key: q_total
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
+
+iqa_val:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/val
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # See iqa_train above.
+  charge_key: q_total
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
