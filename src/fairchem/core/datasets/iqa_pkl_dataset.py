@@ -235,19 +235,20 @@ class IQAPKLDataset(BaseDataset):
 
         for out_key, val in labels.items():
             if out_key == "energy":
-                continue 
+                continue  # Already handled
 
-            # Apply unit conversion if requested
+            # Apply unit conversion if requested.
+            # Energy labels are Hartree regardless of their level (system (1,),
+            # per-atom (N,) or per-edge (E,)), so the conversion must not be keyed
+            # off the tensor length -- only the (N, 3) vector labels are exempt.
             if out_key in {"iqa_forces_direct", "iqa_forces_grad"}:
-                converted_val = Ht_per_A_to_eV_per_Bohr(val) if self.force_ht2ev else val
-            # TODO: convert dipole to debye if needed
-            # elif out_key in ["dipole_vector", "dipole_intra", "dipole_bond"]:
-            #     # do not convert dipole vectors
-            #     pass 
-            elif val.ndim == 1 and val.shape[0] == 1:
-                # Only convert scalar labels (1D tensor of shape (1,)) to eV if requested
+                val = Ht_per_A_to_eV_per_Bohr(val) if self.force_ht2ev else val
+            elif val.ndim == 2 and val.shape[1] == 3:
+                # TODO: convert dipole vectors (dipole_intra/vector/bond) to Debye
+                pass
+            else:
                 val = Ht_to_eV(val) if self.ht2ev else val
-            
+
             setattr(ad, out_key, val)
 
         return ad
