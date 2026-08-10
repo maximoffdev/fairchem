@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref_100neighbors_48h
+  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref_otf_300neighbors_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -34,7 +34,10 @@ bf16: True
 # --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
 moe_layer_type: pytorch
 num_moe_experts: ${cluster.num_moe_experts}
-otf_graph: False
+otf_graph: True
+# IQA systems are isolated molecules with a zero cell -- build the radius graph
+# aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
+always_use_pbc: False
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False

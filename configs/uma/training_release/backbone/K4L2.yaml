@@ -14,6 +14,11 @@ otf_graph: ${otf_graph}
 max_neighbors: ${max_neighbors}
 use_pbc: True
 use_pbc_single: True
+# Only consulted when otf_graph is True. Defaults to True (periodic); the IQA
+# configs set always_use_pbc: False at the top level because those systems are
+# isolated molecules with a zero cell, where the pbc path divides by a zero cell
+# volume and produces NaN cell repetitions.
+always_use_pbc: ${oc.select:always_use_pbc,True}
 
 cutoff: ${cutoff_radius}
 edge_channels: 128

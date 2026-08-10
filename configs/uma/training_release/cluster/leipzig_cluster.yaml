@@ -21,7 +21,7 @@ cpus_per_task: 4
 timeout_hr: "48"
 partition: clara
 max_atoms: 450
-max_neighbors: 100    # K4L2 is small enough to handle full neighbor count
+max_neighbors: 300    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
 cutoff_radius: 7.0   # Å; matched to K10L4 backbone default
 setup_commands: []
