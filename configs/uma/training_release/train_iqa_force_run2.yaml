@@ -37,7 +37,10 @@ num_moe_experts: ${cluster.num_moe_experts}
 otf_graph: False
 # IQA systems are isolated molecules with a zero cell -- build the radius graph
 # aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
-always_use_pbc: False
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  always_use_pbc: False
+
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False
