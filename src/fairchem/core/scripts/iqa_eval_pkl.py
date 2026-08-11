@@ -110,13 +110,20 @@ print(f"Predicted {len(structures)} structures")
 # 3. LOAD DATASET TARGETS
 # =============================================================================
 EV_TO_HARTREE = 1.0 / 27.211386245988
-EV_PER_BOHR_TO_HARTREE_PER_ANGSTROM = 1.8897261245650618 / 27.211386245988
+# Inverse of IQAPKLDataset.Ht_per_Bohr_to_eV_per_A: model/label forces are eV/A,
+# the pkl (AIMAll) convention is Hartree/Bohr.
+EV_PER_ANGSTROM_TO_HARTREE_PER_BOHR = 1.0 / (27.211386245988 * 1.8897261245650618)
+# Inverse of IQAPKLDataset.au_to_debye: dipole labels/predictions are Debye,
+# the pkl convention is atomic units (e * Bohr).
+DEBYE_TO_AU = 1.0 / 2.5417464519485975
 HARTREE_TO_KCAL_MOL = 627.5094740631
 
 
 def convert_units(name: str, values: np.ndarray) -> np.ndarray:
     if "force" in name:
-        return values * EV_PER_BOHR_TO_HARTREE_PER_ANGSTROM
+        return values * EV_PER_ANGSTROM_TO_HARTREE_PER_BOHR
+    if "dipole" in name:
+        return values * DEBYE_TO_AU
     return values * EV_TO_HARTREE
 
 
@@ -125,7 +132,7 @@ dataset_root = path if path.is_dir() else path.parent
 val_dataset = IQAPKLDataset(
     src=str(dataset_root),
     name=task_name,
-    ht2ev=True,  # dataset labels converted to eV / eV per Bohr
+    ht2ev=True,  # dataset labels converted to eV / eV per Angstrom
     key_mapping={
         "energy": "e_total",
         "iqa_intra_a": "E_IQA_Intra(A)",

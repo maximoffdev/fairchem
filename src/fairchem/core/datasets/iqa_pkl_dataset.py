@@ -28,8 +28,30 @@ def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
     return x * 27.211386245988
 
-def Ht_per_A_to_eV_per_Bohr(x: torch.Tensor) -> torch.Tensor:
-    return x * 27.211386245988 / 1.8897261245650618
+def Ht_per_Bohr_to_eV_per_A(x: torch.Tensor) -> torch.Tensor:
+    # AIMAll forces are atomic units (Hartree/Bohr), matching the Bohr positions;
+    # the model works in eV/Angstrom. 1 Ha/Bohr = 27.211386... eV / 0.529177... A.
+    return x * 27.211386245988 * 1.8897261245650618
+
+
+# 1 atomic unit of dipole moment (e * Bohr) = 2.5417464519... Debye
+AU_TO_DEBYE = 2.5417464519485975
+
+
+def au_to_debye(x: torch.Tensor) -> torch.Tensor:
+    return x * AU_TO_DEBYE
+
+
+def debye_to_au(x: torch.Tensor) -> torch.Tensor:
+    return x / AU_TO_DEBYE
+
+
+# Labels whose unit is not a plain energy, keyed by the *out_key* of key_mapping.
+# Everything not listed here is treated as Hartree (see __getitem__).
+FORCE_KEYS = frozenset({"iqa_forces_direct", "iqa_forces_grad"})
+DIPOLE_KEYS = frozenset(
+    {"dipole_intra", "dipole_vector", "dipole_bond", "dipole_scalar"}
+)
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
@@ -89,6 +111,7 @@ class IQAPKLDataset(BaseDataset):
         bohr2ang: bool = True,
         ht2ev: bool = True,
         force_ht2ev: bool = True,
+        au2debye: bool = True,
         charge_key: str = "q_total",
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
@@ -98,6 +121,7 @@ class IQAPKLDataset(BaseDataset):
         self.bohr2ang = bohr2ang
         self.ht2ev = ht2ev
         self.force_ht2ev = force_ht2ev
+        self.au2debye = au2debye
         # Total molecular charge, fed to the backbone's ChgSpinEmbedding for charge
         # conditioning. Note the pkls also carry a 'Charge' key, but that is the
         # per-atom nuclear charge Z, not the system charge -- do not point here at it.
@@ -237,14 +261,20 @@ class IQAPKLDataset(BaseDataset):
             if out_key == "energy":
                 continue  # Already handled
 
-            # Apply unit conversion if requested.
-            # Energy labels are Hartree regardless of their level (system (1,),
-            # per-atom (N,) or per-edge (E,)), so the conversion must not be keyed
-            # off the tensor length -- only the (N, 3) vector labels are exempt.
-            if out_key in {"iqa_forces_direct", "iqa_forces_grad"}:
-                val = Ht_per_A_to_eV_per_Bohr(val) if self.force_ht2ev else val
+            # Apply unit conversion if requested. Dispatch on the label's *name*, not
+            # its shape: energy labels are Hartree at every level (system (1,),
+            # per-atom (N,) or per-edge (E,)), and dipoles come as both vectors
+            # (N, 3) and magnitudes (N,), so a shape test would mislabel both.
+            if out_key in FORCE_KEYS:
+                val = Ht_per_Bohr_to_eV_per_A(val) if self.force_ht2ev else val
+            elif out_key in DIPOLE_KEYS:
+                # AIMAll dipoles (Mu(A), Mu_Intra(A), Mu_Bond(A) and their
+                # magnitudes) are atomic units, e * Bohr -> Debye.
+                val = au_to_debye(val) if self.au2debye else val
             elif val.ndim == 2 and val.shape[1] == 3:
-                # TODO: convert dipole vectors (dipole_intra/vector/bond) to Debye
+                # Some other per-atom vector (e.g. the EhF(A) electric field). Its
+                # unit is not known here, so leave it in the pkl's atomic units;
+                # add it to FORCE_KEYS/DIPOLE_KEYS if it ever becomes a target.
                 pass
             else:
                 val = Ht_to_eV(val) if self.ht2ev else val
