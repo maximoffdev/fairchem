@@ -2124,12 +2124,14 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         self,
         values: torch.Tensor,
         edge_index: torch.Tensor,
-        nedges: torch.Tensor,
+        batch: torch.Tensor,
+        num_graphs: int,
     ) -> torch.Tensor:
-        edge_batch = torch.repeat_interleave(
-            torch.arange(nedges.shape[0], device=nedges.device),
-            nedges,
-        )
+        # With otf_graph the model's graph is a differently ordered subset of the
+        # dataset's edge list, so its edges are neither counted by data["nedges"] nor
+        # grouped by system. An edge never crosses systems, so take the system from
+        # the source node instead of repeat_interleave-ing over the stored counts.
+        edge_batch = batch[edge_index[0]]
 
         if self.edge_energy_mode == "upper_triangle":
             mask = edge_index[0] < edge_index[1]
@@ -2137,7 +2139,7 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
             edge_batch = edge_batch[mask]
 
         energy_part = torch.zeros(
-            nedges.shape[0], device=values.device, dtype=values.dtype
+            num_graphs, device=values.device, dtype=values.dtype
         )
         energy_part.index_add_(0, edge_batch, values)
 
@@ -2174,12 +2176,17 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         if inter_a_pred is not None:
             energy_nodes = energy_nodes + inter_a_pred * self.inter_a_rmsd
 
-        energy_part = self._sum_nodes(energy_nodes, data["batch"], len(data["natoms"]))
+        num_graphs = len(data["natoms"])
+        energy_part = self._sum_nodes(energy_nodes, data["batch"], num_graphs)
         if inter_a_pred is None and edge_pred is not None:
+            # edge_pred is indexed by the graph the edge head predicted on, which under
+            # graph parallel is the gathered full graph (see _predicted_edge_index), so
+            # the node numbering to look the system up in is the full one.
             energy_part = energy_part + self._sum_edges(
                 edge_pred * self.inter_ab_rmsd,
-                emb["edge_index"],
-                data["nedges"],
+                _predicted_edge_index(emb),
+                data.get("batch_full", data["batch"]),
+                num_graphs,
             )
 
         if gp_utils.initialized():

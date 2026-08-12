@@ -8,7 +8,7 @@
     element_references:
       _target_: torch.DoubleTensor
       _args_:
-        - ${element_refs.iqa_intra_elem_refs}
+        - ${element_refs.iqa_intra}
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:

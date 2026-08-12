@@ -1,0 +1,170 @@
+defaults:
+  - cluster: leipzig_cluster
+  - dataset: iqa_intra_inter
+  - tasks: iqa_force_run1
+  - backbone: K4L2
+  - element_refs: iqa_isolated_atom_elem_refs
+  - _self_
+
+job:
+  device_type: ${cluster.device}
+  scheduler:
+    mode: ${cluster.mode}
+    ranks_per_node: ${cluster.ranks_per_node}
+    num_nodes: 1
+    slurm:
+      partition: ${cluster.partition}
+      mem_gb: ${cluster.mem_gb}
+      cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
+      setup_commands: ${cluster.setup_commands}
+  debug: ${cluster.debug}
+  run_dir: ${cluster.run_dir}
+  run_name: le-1-1-force_mean_and_rmsd_norm_all_train-with_ref_otf_300neighbors_8A_48h
+  logger:
+    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    _partial_: true
+    entity: lamerslab
+    project: iqa
+
+# --- Runtime Hyperparameters ---
+epochs: 300
+bf16: True
+
+# --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
+moe_layer_type: pytorch
+num_moe_experts: ${cluster.num_moe_experts}
+otf_graph: True
+# IQA systems are isolated molecules with a zero cell -- build the radius graph
+# aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  always_use_pbc: False
+
+max_neighbors: ${cluster.max_neighbors}
+cutoff_radius: ${cluster.cutoff_radius}
+regress_stress: False
+direct_forces: False
+
+# iqa_kinetic_coef: 1.0
+# iqa_vne_coef: 1.0
+# iqa_vee_coef: 1.0
+# iqa_inter_coef: 1.0
+# # Edge-level coefficients
+# iqa_inter_edge_coef: 1.0
+# iqa_vee_edge_coef: 1.0
+# iqa_vne_edge_coef: 1.0
+# iqa_ven_edge_coef: 1.0
+# iqa_vnn_edge_coef: 1.0
+# Fit with scripts/iqa_compute_normalizers.py over the sumformulasplit/train split
+# (118977 pkl files, HCNOSPClF_combined_datasets_filtered0.001), eV.
+# intra_a is dereferenced with element_refs.iqa_intra (iqa_isolated_atom_elem_refs.yaml);
+# rerun the script if that element-refs file changes.
+normalizer_mean_iqa_intra_a: -0.00434839
+normalizer_rmsd_iqa_intra_a: 20.0952
+#normalizer_mean_iqa_inter_a: -10.5846
+#normalizer_rmsd_iqa_inter_a: 8.99189
+normalizer_mean_iqa_inter_ab: -0.690637
+normalizer_rmsd_iqa_inter_ab: 2.69112
+normalizer_mean_iqa_force: 0.0
+normalizer_rmsd_iqa_force: 1.0
+iqa_intra_a_coef: 1.0
+#iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
+iqa_inter_ab_coef: 1.0
+
+force_direct_coef: 0.0
+force_grad_coef: 0.1
+force_loss_reduction: mean
+edge_energy_mode: half
+
+# --- Dataset Setup ---
+dataset_list: ["iqa_pkl"]
+exclude_keys: ["source", "sid"]
+
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_train}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: True
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_val}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: False
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+heads:
+  iqa_components_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Components_EFS_Head
+    node_task_name: iqa_intra_a
+    edge_task_name: iqa_inter_ab
+    forces_direct_task_name: iqa_forces_direct
+    forces_grad_task_name: iqa_forces_grad
+    include_inter_a: false
+    edge_energy_mode: ${edge_energy_mode}
+    intra_rmsd: ${normalizer_rmsd_iqa_intra_a}
+    inter_ab_rmsd: ${normalizer_rmsd_iqa_inter_ab}
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${tasks}
+    model:
+      _target_: fairchem.core.models.base.HydraModel
+      backbone: ${backbone}
+      pass_through_head_outputs: true
+      # _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      # checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/be2896459a03fcde05e20d2fcefd11f450601fce/checkpoints/uma-s-1p2.pt
+      # overrides:
+      #   freeze_backbone: true
+      #   pass_through_head_outputs: false
+      heads: ${heads}
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: 8e-4
+      weight_decay: 1e-3
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
+      lr_min_factor: 0.01
+      epochs: ${epochs}
+      steps: null
+    print_every: 10
+    clip_grad_norm: 100
+    bf16: ${bf16}
+  max_epochs: ${epochs}
+  max_steps: null
+  evaluate_every_n_steps: 500
+  callbacks:
+    - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
+      job_config: ${job}
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 5000
+      max_saved_checkpoints: 3
+      save_best_val_checkpoint: true
