@@ -1,11 +1,10 @@
 defaults:
   - cluster: local
   - dataset: iqa_components
-  - tasks: iqa_decompose
-  - backbone: K4L2_light
+  - tasks: iqa_decompose_subterms
+  - backbone: K4L2
   - element_refs: iqa_isolated_atom_elem_refs
-
-
+  - _self_
 
 
 job:
@@ -22,7 +21,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_new_split_long
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_otf_300neighbors_8A_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -46,6 +45,13 @@ num_moe_experts: ${cluster.num_moe_experts}
 # 1UAO              1      138 |  7.797     13 | 11.638     21 | 16.261     28 | 22.058     39
 
 otf_graph: True
+# IQA systems are isolated molecules with a zero cell -- build the radius graph
+# aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  always_use_pbc: False
+  regress_forces: False
+
 max_neighbors: ${cluster.max_neighbors}
 cutoff_radius: ${cluster.cutoff_radius}
 regress_stress: False

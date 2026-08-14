@@ -322,30 +322,49 @@
 #       prediction_key: dipole_intra
 #       label_key: dipole_intra
 
+# Atomic dipole vector Mu(A), in Debye (converted from a.u. by IQAPKLDataset).
+# `name` is looked up both as the label on the batch (-> key_mapping in
+# dataset/iqa_components.yaml) and as the head name in the model config;
+# `property` is the key the head returns inside its output dict.
 - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
-  name: forces
+  name: dipole_vector
   level: atom
-  property: forces
+  property: dipole_vector
   datasets: ${dataset_list}
-  # train_on_free_atoms: True
-  # eval_on_free_atoms: True
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.L2NormLoss
-    #reduction: per_structure
-    coefficient: ${dipole_intra_coef}
+    coefficient: ${dipole_vector_coef}
   out_spec:
     dim: [3]
     dtype: float32
-    dipole_intra:
-        prediction_key: dipole_intra
-        label_key: dipole_intra
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
     rmsd: ${normalizer_rmsd}
-  # metrics:
-  #   - mae
-  #   - cosine_similarity
-  #   - magnitude_error
+  metrics:
+    - mae
+    - cosine_similarity
+    - magnitude_error
+
+# Atomic charge q(A), in electrons. Trained jointly with the dipole above.
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_charge
+  level: atom
+  property: pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_charge_coef}
+  out_spec:
+    dim: [1]
+    dtype: float32
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  metrics:
+    - mae

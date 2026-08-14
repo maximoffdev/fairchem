@@ -2,7 +2,7 @@ defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_intra_inter
   - tasks: iqa_decompose_intra_inter
-  - backbone: K10L4
+  - backbone: K4L2
   - element_refs: iqa_isolated_atom_elem_refs
   - _self_
 

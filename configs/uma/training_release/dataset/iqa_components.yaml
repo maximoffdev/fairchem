@@ -23,9 +23,12 @@ iqa_train:
     iqa_ven_ab: Ven(A,B)/2
     iqa_vnn_ab: Vnn(A,B)/2
     # dipole_scalar: "|Mu(A)|"
-    # dipole_vector: Mu(A)
+    dipole_vector: Mu(A)
     dipole_intra: Mu_Intra(A)
     # dipole_bond: Mu_Bond(A)
+    # Atomic charge, in electrons. Listed in DIMENSIONLESS_KEYS in
+    # iqa_pkl_dataset.py so it is not run through the Hartree -> eV conversion.
+    iqa_charge: q(A)
 
 iqa_val:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
@@ -52,7 +55,10 @@ iqa_val:
     iqa_ven_ab: Ven(A,B)/2
     iqa_vnn_ab: Vnn(A,B)/2
     # dipole_scalar: "|Mu(A)|"
-    # dipole_vector: Mu(A)
+    dipole_vector: Mu(A)
     dipole_intra: Mu_Intra(A)
     # dipole_bond: Mu_Bond(A)
+    # Atomic charge, in electrons. Listed in DIMENSIONLESS_KEYS in
+    # iqa_pkl_dataset.py so it is not run through the Hartree -> eV conversion.
+    iqa_charge: q(A)
     

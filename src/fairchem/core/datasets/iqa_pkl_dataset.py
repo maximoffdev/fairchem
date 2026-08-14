@@ -52,6 +52,10 @@ FORCE_KEYS = frozenset({"iqa_forces_direct", "iqa_forces_grad"})
 DIPOLE_KEYS = frozenset(
     {"dipole_intra", "dipole_vector", "dipole_bond", "dipole_scalar"}
 )
+# Labels that carry no unit and must be passed through untouched. Atomic charges
+# q(A) are in electrons; without this they fall through to the Hartree -> eV
+# branch in __getitem__ and come out scaled by 27.2.
+DIMENSIONLESS_KEYS = frozenset({"iqa_charge"})
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
@@ -265,7 +269,9 @@ class IQAPKLDataset(BaseDataset):
             # its shape: energy labels are Hartree at every level (system (1,),
             # per-atom (N,) or per-edge (E,)), and dipoles come as both vectors
             # (N, 3) and magnitudes (N,), so a shape test would mislabel both.
-            if out_key in FORCE_KEYS:
+            if out_key in DIMENSIONLESS_KEYS:
+                pass
+            elif out_key in FORCE_KEYS:
                 val = Ht_per_Bohr_to_eV_per_A(val) if self.force_ht2ev else val
             elif out_key in DIPOLE_KEYS:
                 # AIMAll dipoles (Mu(A), Mu_Intra(A), Mu_Bond(A) and their

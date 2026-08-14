@@ -262,7 +262,11 @@ def get_output_mask(
 
     target = get_task_target(batch, task, edge_alignment)
     output_masks = {task.name: torch.isfinite(target)}
-    if "forces" in task.name:
+    # Per-atom labels with more than one component (forces, atomic dipoles, ...)
+    # give a per-component mask; collapse it to one flag per atom so it lines up
+    # with the per-atom dataset mask below. Dispatching on the shape rather than
+    # on "forces" in task.name keeps any (N, k) atom task working.
+    if task.level == "atom" and output_masks[task.name].dim() > 1:
         output_masks[task.name] = output_masks[task.name].all(dim=1)
 
     for dset in set(batch.dataset_name):
