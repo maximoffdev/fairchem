@@ -22,6 +22,9 @@ from fairchem.core.common.typing import none_throws
 
 T = TypeVar("T")
 DISTRIBUTED_PORT = 13356
+# size of the port window used to spread concurrent jobs; kept well below the
+# ephemeral port range (32768+) so we never fight the kernel for a port
+DISTRIBUTED_PORT_RANGE = 10000
 CURRENT_DEVICE_TYPE_STR = "CURRRENT_DEVICE_TYPE"
 
 
@@ -29,6 +32,21 @@ def os_environ_get_or_throw(x: str) -> str:
     if x not in os.environ:
         raise RuntimeError(f"Could not find {x} in ENV variables")
     return none_throws(os.environ.get(x))
+
+
+def get_distributed_port() -> int:
+    """Rendezvous port for a multi-rank job.
+
+    A fixed port breaks as soon as two jobs share a node: the second one either
+    fails to bind or, worse, joins the first job's store. Deriving the port from
+    SLURM_JOB_ID keeps every rank of a job in agreement (they all see the same
+    id, and array elements get distinct ids) while separating jobs from
+    each other.
+    """
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id is None or not job_id.isdigit():
+        return DISTRIBUTED_PORT
+    return DISTRIBUTED_PORT + int(job_id) % DISTRIBUTED_PORT_RANGE
 
 
 def get_init_method(
@@ -62,7 +80,7 @@ def get_init_method(
             world_size=world_size,
             hostname=hostnames.split()[0].decode("utf-8"),
             rank=rank,
-            port=get_free_port() if world_size == 1 else DISTRIBUTED_PORT,
+            port=get_free_port() if world_size == 1 else get_distributed_port(),
         )
     elif init_method == "file":
         return get_file_init_method(world_size=world_size, rank=rank, filename=filename)

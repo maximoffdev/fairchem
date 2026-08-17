@@ -21,7 +21,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_sharedhead_otf_300neighbors_6A_48h
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_otf_300neighbors_6A_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -150,7 +150,7 @@ eval_dataloader:
 # The three pair terms V_ne(A,B), V_ee(A,B), V_en(A,B) and the intra terms are all
 # functionals of the same density, so the shared trunk is a physical prior rather
 # than a compromise, and it gets 6x the gradient signal.
-share_head_trunk: True
+share_head_trunk: False
 # With a shared trunk: keep the first (wide -> hidden) output projection per task
 # for a little task-specific capacity. False shares it too, leaving only the final
 # SO3_Linear -> 1 per task. Ignored when share_head_trunk is False.
