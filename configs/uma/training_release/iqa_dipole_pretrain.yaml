@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: dipole-charge-ref_otf_300neighbors_otf_chargecond_300neighbors_8A_48h
+  run_name: dipole-charge-ref_otf_300neighbors_otf_chargecond_300neighbors_6A_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true

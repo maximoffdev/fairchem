@@ -1470,20 +1470,21 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             return x.squeeze(-1)
         return x
 
-    def forward(self, data, emb):
-        """Forward pass for SO(2)-equivariant graph attention.
+    def compute_edge_messages(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Run the SO(2) attention trunk and return per-edge message features.
 
-        **FAIRCHEM ADAPTATION:** forward signature differs from EBDM.
-        - EBDM: forward(x: SO3_Embedding, atomic_numbers, edge_distance, edge_index)
-        - FAIRCHEM: forward(data: dict, emb: dict) via HeadInterface contract
-            - data: Contains atomic_numbers, pos, batch, etc. from Data object
-            - emb: Dict with node_embedding [N, (lmax+1)², C], edge_embedding [E, C_edge],
-                     edge_index [2, E], edge_distance_vec [E, 3]
+        This is everything the head does before the task-specific output
+        projections: build edge messages from the node embeddings, rotate into the
+        edge-aligned frame, two SO(2) convolutions with an equivariant activation
+        in between, attention weighting, and rotation back to the global frame.
+
+        Splitting it out lets several tasks share one trunk (see
+        ``IQA_MultiTaskSO2Head``) instead of each re-deriving the same features.
 
         Returns:
-            Dict[str, Dict[str, Tensor]]: Task-keyed predictions
-            - {edge_task_name: {"edge_pred": [E, 1]}} if edge_prediction=True
-            - {node_task_name: {"node_pred": [N, 1]}} if node_prediction=True
+            Tensor [E, (lmax+1)^2, num_heads * attn_value_channels] in the global frame.
         """
         # === FAIRCHEM ADAPTATION: Extract emb dict components ===
         # In EBDM, inputs are separate parameters; here they come bundled in emb dict
@@ -1500,7 +1501,6 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         edge_distance_vec = emb["edge_distance_vec"]
 
         num_edges = edge_index.shape[1]
-        num_nodes = node_embedding.shape[0]
 
         # === EBDM-origin: Build edge messages ===
         # Concatenate source and target node embeddings along feature dimension.
@@ -1630,6 +1630,27 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # === EBDM-origin: Rotation back to global frame ===
         # Apply inverse Wigner matrix to map from edge-aligned back to global frame.
         x_message = torch.bmm(wigner_inv, x_message)
+        return x_message
+
+    def forward(self, data, emb):
+        """Forward pass for SO(2)-equivariant graph attention.
+
+        **FAIRCHEM ADAPTATION:** forward signature differs from EBDM.
+        - EBDM: forward(x: SO3_Embedding, atomic_numbers, edge_distance, edge_index)
+        - FAIRCHEM: forward(data: dict, emb: dict) via HeadInterface contract
+            - data: Contains atomic_numbers, pos, batch, etc. from Data object
+            - emb: Dict with node_embedding [N, (lmax+1)², C], edge_embedding [E, C_edge],
+                     edge_index [2, E], edge_distance_vec [E, 3]
+
+        Returns:
+            Dict[str, Dict[str, Tensor]]: Task-keyed predictions
+            - {edge_task_name: {"edge_pred": [E, 1]}} if edge_prediction=True
+            - {node_task_name: {"node_pred": [N, 1]}} if node_prediction=True
+        """
+        # === Trunk: shared SO(2) attention over edges (see compute_edge_messages) ===
+        edge_index = emb["edge_index"]
+        num_nodes = emb["node_embedding"].shape[0]
+        x_message = self.compute_edge_messages(data, emb)
 
         # === FAIRCHEM ADAPTATION: Task-keyed output dict ===
         # EBDM returns (out_embedding_nodes, out_embedding_edges) tuple.
@@ -1977,6 +1998,198 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             else:
                 aggregate_pred = torch.stack(component_preds, dim=0).sum(dim=0)
             outputs[self.aggregate_name] = {"node_pred": aggregate_pred}
+
+        return outputs
+
+
+class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
+    """Several IQA node/edge tasks predicted from one SO(2) attention trunk.
+
+    Every ``SO2EquivariantGraphAttentionNodeEdgePrediction`` head consumes the same
+    ``node_embedding``/``edge_embedding``/``edge_index`` and runs an identical --- but
+    separately parameterized --- attention block; only the final ``SO3_Linear -> 1``
+    projection is task specific. Running one head per task therefore pays for the
+    trunk once per task (~1.2M parameters each for K4L2) to buy a handful of
+    task-specific weights.
+
+    This head runs the trunk **once** and hangs a small per-task output stack off it.
+    For the IQA subterms that is also the right physical prior: V_ne(A, B),
+    V_ee(A, B), V_en(A, B) (and the intra-atomic kinetic/V_ne/V_ee terms) are all
+    functionals of the same electron density, so the shared trunk sees the summed
+    gradient signal of every task.
+
+    Args:
+        node_task_names: tasks predicted per atom (``{"node_pred": [N]}``).
+        edge_task_names: tasks predicted per directed edge
+            (``{"edge_pred": [E], "edge_index": [2, E]}``).
+        share_trunk: ``True`` (default) shares one trunk across all listed tasks.
+            ``False`` falls back to the historical layout --- one fully independent
+            ``SO2EquivariantGraphAttentionNodeEdgePrediction`` per task --- which is
+            parameter-for-parameter what listing the tasks as separate ``heads:``
+            entries gives, so the flag switches between the two regimes without any
+            other config change.
+        per_task_proj_1: with a shared trunk, whether the first (wide -> hidden)
+            output projection is per task as well. ``True`` (default) keeps a bit of
+            task-specific capacity, ``False`` shares it and leaves only the final
+            ``SO3_Linear -> output_channels`` per task.
+        output_channels: output channels of the final projection (1 for scalars).
+
+    Node and edge tasks share the *same* trunk here. To give each group its own
+    trunk, declare two of these heads instead (one with only ``node_task_names``,
+    one with only ``edge_task_names``).
+    """
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        node_task_names: list[str] | None = None,
+        edge_task_names: list[str] | None = None,
+        share_trunk: bool = True,
+        per_task_proj_1: bool = True,
+        output_channels: int = 1,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+
+        self.node_task_names = [str(name) for name in (node_task_names or [])]
+        self.edge_task_names = [str(name) for name in (edge_task_names or [])]
+        if not self.node_task_names and not self.edge_task_names:
+            raise ValueError(
+                "IQA_MultiTaskSO2Head needs at least one of node_task_names / "
+                "edge_task_names."
+            )
+        overlap = set(self.node_task_names) & set(self.edge_task_names)
+        if overlap:
+            raise ValueError(
+                f"Task names must be unique across node and edge tasks, got {sorted(overlap)}"
+            )
+
+        self.share_trunk = bool(share_trunk)
+        self.per_task_proj_1 = bool(per_task_proj_1)
+        self.output_channels = int(output_channels)
+
+        if not self.share_trunk:
+            # Independent head per task: identical parameterization to declaring one
+            # SO2EquivariantGraphAttentionNodeEdgePrediction per task in the config.
+            self.task_heads = nn.ModuleDict()
+            for task in self.edge_task_names:
+                self.task_heads[task] = SO2EquivariantGraphAttentionNodeEdgePrediction(
+                    backbone,
+                    edge_prediction=True,
+                    node_prediction=False,
+                    edge_task_name=task,
+                    output_channels_edges=self.output_channels,
+                    **kwargs,
+                )
+            for task in self.node_task_names:
+                self.task_heads[task] = SO2EquivariantGraphAttentionNodeEdgePrediction(
+                    backbone,
+                    edge_prediction=False,
+                    node_prediction=True,
+                    node_task_name=task,
+                    output_channels_nodes=self.output_channels,
+                    **kwargs,
+                )
+            return
+
+        # Shared trunk: build the attention block with both output projections
+        # disabled, then add the per-task stacks below.
+        self.trunk = SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone,
+            edge_prediction=False,
+            node_prediction=False,
+            **kwargs,
+        )
+
+        in_channels = self.trunk.num_heads * self.trunk.attn_value_channels
+        proj_hidden = self.trunk.num_heads * max(self.trunk.attn_value_channels // 2, 1)
+        lmax = self.trunk.lmax_list[0]
+
+        def make_proj_1() -> SO3_Linear:
+            return SO3_Linear(in_channels, proj_hidden, lmax=lmax)
+
+        def make_proj_2() -> SO3_Linear:
+            return SO3_Linear(proj_hidden, self.output_channels, lmax=lmax)
+
+        self.edge_proj_1: nn.Module | None = None
+        self.edge_proj_1_tasks: nn.ModuleDict | None = None
+        self.edge_proj_2 = nn.ModuleDict()
+        if self.edge_task_names:
+            if self.per_task_proj_1:
+                self.edge_proj_1_tasks = nn.ModuleDict(
+                    {task: make_proj_1() for task in self.edge_task_names}
+                )
+            else:
+                self.edge_proj_1 = make_proj_1()
+            for task in self.edge_task_names:
+                self.edge_proj_2[task] = make_proj_2()
+
+        self.node_proj_1: nn.Module | None = None
+        self.node_proj_1_tasks: nn.ModuleDict | None = None
+        self.node_proj_2 = nn.ModuleDict()
+        if self.node_task_names:
+            if self.per_task_proj_1:
+                self.node_proj_1_tasks = nn.ModuleDict(
+                    {task: make_proj_1() for task in self.node_task_names}
+                )
+            else:
+                self.node_proj_1 = make_proj_1()
+            for task in self.node_task_names:
+                self.node_proj_2[task] = make_proj_2()
+
+    def _finalize(self, out_embedding: torch.Tensor) -> torch.Tensor:
+        """Narrow to the requested output degree, squeeze, and gather under GP."""
+        out_embedding = out_embedding.narrow(
+            1, self.trunk.num_irreps_passed, 2 * self.trunk.out_degree + 1
+        )
+        pred = self.trunk._squeeze_scalar_output(out_embedding)
+        if gp_utils.initialized():
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+        return pred
+
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        if not self.share_trunk:
+            outputs: dict[str, dict[str, torch.Tensor]] = {}
+            for head in self.task_heads.values():
+                outputs.update(head(data, emb))
+            return outputs
+
+        edge_index = emb["edge_index"]
+        num_nodes = emb["node_embedding"].shape[0]
+        x_message = self.trunk.compute_edge_messages(data, emb)
+
+        outputs = {}
+        for task in self.edge_task_names:
+            proj_1 = (
+                self.edge_proj_1_tasks[task]
+                if self.per_task_proj_1
+                else self.edge_proj_1
+            )
+            edge_pred = self._finalize(self.edge_proj_2[task](proj_1(x_message)))
+            outputs[task] = {
+                "edge_pred": edge_pred,
+                "edge_index": _predicted_edge_index(emb),
+            }
+
+        if self.node_task_names:
+            # Same neighbor aggregation the single-task head does, but only once.
+            x_nodes = torch_geometric.utils.scatter(
+                x_message,
+                edge_index[1],
+                dim=0,
+                dim_size=num_nodes,
+                reduce="sum",
+            )
+            for task in self.node_task_names:
+                proj_1 = (
+                    self.node_proj_1_tasks[task]
+                    if self.per_task_proj_1
+                    else self.node_proj_1
+                )
+                node_pred = self._finalize(self.node_proj_2[task](proj_1(x_nodes)))
+                outputs[task] = {"node_pred": node_pred}
 
         return outputs
 

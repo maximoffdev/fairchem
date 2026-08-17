@@ -21,7 +21,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_otf_300neighbors_8A_48h
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_sharedhead_otf_300neighbors_6A_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -141,40 +141,32 @@ eval_dataloader:
     tasks: ${tasks}
     exclude_keys: ${exclude_keys}
 
-heads:
-  # Dedicated heads for intra-atomic subterms
-  iqa_kinetic_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_kinetic
-  iqa_vne_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_vne
-  iqa_vee_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: true
-    edge_prediction: false
-    node_task_name: iqa_vee
+# --- Head architecture ---
+# True:  all six learned subterm tasks (3 intra-atomic node terms + 3 pair edge
+#        terms) share ONE SO(2) attention trunk; only the small output stacks are
+#        task specific. ~1.6M head params for K4L2.
+# False: one fully independent trunk per task -- the previous layout, identical
+#        parameterization to declaring six separate heads. ~8.5M head params.
+# The three pair terms V_ne(A,B), V_ee(A,B), V_en(A,B) and the intra terms are all
+# functionals of the same density, so the shared trunk is a physical prior rather
+# than a compromise, and it gets 6x the gradient signal.
+share_head_trunk: True
+# With a shared trunk: keep the first (wide -> hidden) output projection per task
+# for a little task-specific capacity. False shares it too, leaving only the final
+# SO3_Linear -> 1 per task. Ignored when share_head_trunk is False.
+per_task_proj_1: True
 
-  # Dedicated heads for edge-level inter subterms
-  iqa_vne_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_vne_ab
-  iqa_vee_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_vee_ab
-  iqa_ven_ab_head:
-    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
-    node_prediction: false
-    edge_prediction: true
-    edge_task_name: iqa_ven_ab
+heads:
+  # One trunk, six task-specific output stacks (or six independent trunks when
+  # share_head_trunk is False).
+  iqa_subterms_head:
+    module: fairchem.core.models.uma.escn_md.IQA_MultiTaskSO2Head
+    share_trunk: ${share_head_trunk}
+    per_task_proj_1: ${per_task_proj_1}
+    # Intra-atomic subterms, predicted per atom.
+    node_task_names: [iqa_kinetic, iqa_vne, iqa_vee]
+    # Pairwise inter subterms, predicted per directed edge.
+    edge_task_names: [iqa_vne_ab, iqa_vee_ab, iqa_ven_ab]
   # V_nn is computed deterministically (Coulomb's law) rather than predicted.
   iqa_vnn_ab_head:
     module: fairchem.core.models.uma.escn_md.IQA_Vnn_Analytic_Head
