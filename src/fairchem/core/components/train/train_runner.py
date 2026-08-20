@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from torchtnt.framework.state import State
     from torchtnt.framework.unit import TEvalUnit, TTrainUnit
 
+BEST_VAL_CHECKPOINT_DIRNAME = "best_val_checkpoint"
+
 
 @runtime_checkable
 class Checkpointable(Protocol):
@@ -62,6 +64,10 @@ def get_most_recent_viable_checkpoint_path(checkpoint_dir: str | None) -> str | 
     ckpt_dirs_time = get_subdirectories_sorted_by_time(checkpoint_dir)
     most_recent_viable_checkpoint = None
     for sub_dir_path, _ in ckpt_dirs_time[::-1]:
+        # never resume from the best val checkpoint, it is written on its own
+        # schedule and would rewind training to an arbitrary earlier step
+        if os.path.basename(str(sub_dir_path)) == BEST_VAL_CHECKPOINT_DIRNAME:
+            continue
         items = os.listdir(sub_dir_path)
         if items and ".metadata" in items:
             most_recent_viable_checkpoint = sub_dir_path
@@ -106,9 +112,13 @@ class TrainCheckpointCallback(Callback):
             # on main rank only
             # if there are too many checkpoints, delete the oldest one
             if distutils.is_master():
-                checkpoint_dirs_by_time = get_subdirectories_sorted_by_time(
-                    self.checkpoint_dir
-                )
+                # the best val checkpoint is not a periodic checkpoint, it must never
+                # be counted against nor evicted by the retention limit
+                checkpoint_dirs_by_time = [
+                    (dir, t)
+                    for dir, t in get_subdirectories_sorted_by_time(self.checkpoint_dir)
+                    if os.path.basename(str(dir)) != BEST_VAL_CHECKPOINT_DIRNAME
+                ]
                 for dir, _ in checkpoint_dirs_by_time[: -self.max_saved_checkpoints]:
                     if not os.path.islink(dir):
                         shutil.rmtree(dir)
@@ -139,7 +149,7 @@ class TrainCheckpointCallback(Callback):
             assert (
                 self.save_callback
             ), "Must initialize set_runner_callbacks from Runner!"
-            best_path = os.path.join(self.checkpoint_dir, "best_val_checkpoint")
+            best_path = os.path.join(self.checkpoint_dir, BEST_VAL_CHECKPOINT_DIRNAME)
             self.save_callback(best_path)
             logging.info(
                 f"New best val/loss: {val_loss:.6f} at step "
