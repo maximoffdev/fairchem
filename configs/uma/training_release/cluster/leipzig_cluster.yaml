@@ -18,7 +18,7 @@ debug: false
 # Keep mem_gb <= cpus_per_task * 31.25 GiB (4 CPUs -> 125 GiB) to stay under the cap.
 mem_gb: 64
 cpus_per_task: 4
-timeout_hr: "48"
+timeout_hr: "40"
 partition: clara
 max_atoms: 450
 max_neighbors: 300    # K4L2 is small enough to handle full neighbor count

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 from datetime import timedelta
 from typing import Any, TypeVar
 
@@ -26,6 +27,11 @@ DISTRIBUTED_PORT = 13356
 # ephemeral port range (32768+) so we never fight the kernel for a port
 DISTRIBUTED_PORT_RANGE = 10000
 CURRENT_DEVICE_TYPE_STR = "CURRRENT_DEVICE_TYPE"
+# how many slurm-level restarts we tolerate before refusing to requeue a job that
+# keeps coming up without a usable GPU
+MAX_DEAD_GPU_NODE_REQUEUES = 3
+# seconds to wait for slurm to act on our requeue request before the process dies
+REQUEUE_GRACE_PERIOD_S = 60
 
 
 def os_environ_get_or_throw(x: str) -> str:
@@ -253,11 +259,51 @@ def gather_objects(data: T, group: dist.ProcessGroup = dist.group.WORLD) -> list
     return output
 
 
+def requeue_on_dead_gpu_node() -> None:
+    """Hand the job back to slurm when the node we landed on has no usable GPU.
+
+    A node failure mid-training is requeued by slurm automatically and the runner
+    resumes from its last checkpoint. If the node it lands on has a broken driver
+    ("CUDA driver initialization failed"), that recoverable requeue turns into a
+    permanently FAILED job instead. Retrying in-process cannot help: torch caches
+    the device count in a process-local static after the first query, so only a
+    fresh process on a fresh node can ever see a working driver.
+
+    Bounded by MAX_DEAD_GPU_NODE_REQUEUES so a job that asks for GPUs it was never
+    allocated still fails loudly instead of bouncing around the queue forever.
+    """
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id is None:  # not under slurm, nothing to requeue
+        return
+
+    restart_count = int(os.environ.get("SLURM_RESTART_COUNT", 0))
+    if restart_count >= MAX_DEAD_GPU_NODE_REQUEUES:
+        logging.error(
+            f"No cuda available and already restarted {restart_count} times, giving up instead of requeueing again"
+        )
+        return
+
+    # every rank on the node sees the same dead driver, only one of them should requeue
+    if int(os.environ.get("SLURM_PROCID", 0)) != 0:
+        return
+
+    logging.error(
+        f"No cuda available on {os.environ.get('SLURMD_NODENAME', 'this node')}, "
+        f"requeueing job {job_id} (restart count {restart_count}) to retry on another node"
+    )
+    subprocess.run(["scontrol", "requeue", job_id], check=False)
+    # give slurm time to tear us down; exiting first would let the job finish as
+    # FAILED and the pending requeue would be dropped
+    time.sleep(REQUEUE_GRACE_PERIOD_S)
+
+
 def assign_device_for_local_rank(cpu: bool, local_rank: int) -> None:
     if cpu:
         os.environ[CURRENT_DEVICE_TYPE_STR] = "cpu"
     else:
-        assert torch.cuda.is_available(), "cannot set cpu=false and no cuda available!"
+        if not torch.cuda.is_available():
+            requeue_on_dead_gpu_node()
+            raise RuntimeError("cannot set cpu=false and no cuda available!")
         os.environ[CURRENT_DEVICE_TYPE_STR] = "cuda"
         torch.cuda.set_device(local_rank)
 
