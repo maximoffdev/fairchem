@@ -1,0 +1,27 @@
+# Use shared storage for multi-node stability.
+# data_root_dir: /work2/rh41uvuh-iqa_train_2/HCNOSPClF_combined_datasets_filtered0.001
+# run_dir: /work2/rh41uvuh-iqa_train_2/iqa
+data_root_dir: /work2/oo80wopo-IQA/fairchem/sumformulasplit
+run_dir: /work2/oo80wopo-IQA/fairchem/runs
+#run_dir: ${oc.env:PWD}/runs
+account: null
+qos: null
+mode: SLURM
+device: CUDA
+ranks_per_node: 4
+dataloader_workers: 0
+debug: false
+# Memory for the whole job, in GiB -> sbatch --mem.
+# Do NOT set 0 ("all node memory"): partition clara caps MaxMemPerCPU=32000 MB, so
+# a 500 GiB request forces Slurm to inflate cpus_per_task 4 -> 16 to keep the ratio
+# legal. srun then aborts on SLURM_CPUS_PER_TASK=16 != SLURM_TRES_PER_TASK=cpu=4.
+# Keep mem_gb <= cpus_per_task * 31.25 GiB (4 CPUs -> 125 GiB) to stay under the cap.
+mem_gb: 64
+cpus_per_task: 4
+timeout_hr: "40"
+partition: clara
+max_atoms: 450
+max_neighbors: 300    # K4L2 is small enough to handle full neighbor count
+num_moe_experts: 1
+cutoff_radius: 6.0   # Å; matched to K10L4 backbone default
+setup_commands: []

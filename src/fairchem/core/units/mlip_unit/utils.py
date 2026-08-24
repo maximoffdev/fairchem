@@ -35,6 +35,7 @@ def load_inference_model(
     if overrides is not None:
         checkpoint.model_config = update_configs(checkpoint.model_config, overrides)
 
+
     model = hydra.utils.instantiate(checkpoint.model_config)
     if use_ema:
         model = torch.optim.swa_utils.AveragedModel(model)

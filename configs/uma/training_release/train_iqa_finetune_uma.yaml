@@ -1,0 +1,8 @@
+defaults:
+  - train_iqa_finetune
+  - _self_
+
+job:
+  run_name: iqa_finetune_uma_3term
+
+base_model_name: uma-s-1p1

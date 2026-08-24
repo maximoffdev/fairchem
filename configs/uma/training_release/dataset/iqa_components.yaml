@@ -1,0 +1,64 @@
+iqa_train:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/train
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone
+  charge_key: q_total
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
+    # dipole_scalar: "|Mu(A)|"
+    dipole_vector: Mu(A)
+    dipole_intra: Mu_Intra(A)
+    # dipole_bond: Mu_Bond(A)
+    # Atomic charge, in electrons. Listed in DIMENSIONLESS_KEYS in
+    # iqa_pkl_dataset.py so it is not run through the Hartree -> eV conversion.
+    iqa_charge: q(A)
+
+iqa_val:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/val
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # See iqa_train above.
+  charge_key: q_total
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
+    # dipole_scalar: "|Mu(A)|"
+    dipole_vector: Mu(A)
+    dipole_intra: Mu_Intra(A)
+    # dipole_bond: Mu_Bond(A)
+    # Atomic charge, in electrons. Listed in DIMENSIONLESS_KEYS in
+    # iqa_pkl_dataset.py so it is not run through the Hartree -> eV conversion.
+    iqa_charge: q(A)
+    

@@ -1,0 +1,131 @@
+defaults:
+  - cluster: leipzig_cluster
+  - dataset: iqa_components
+  - tasks: iqa_decompose
+  - element_refs: iqa_isolated_atom_elem_refs
+  - _self_
+
+job:
+  device_type: ${cluster.device}
+  scheduler:
+    mode: ${cluster.mode}
+    ranks_per_node: ${cluster.ranks_per_node}
+    num_nodes: 2
+    slurm:
+      partition: ${cluster.partition}
+      mem_gb: ${cluster.mem_gb}
+      cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
+      setup_commands: ${cluster.setup_commands}
+  debug: ${cluster.debug}
+  run_dir: ${cluster.run_dir}
+  run_name: iqa_finetune_3term
+    #  logger:
+    #    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    #    _partial_: true
+    #    entity: fairchem
+    #    project: uma-iqa
+
+# --- Finetune Specifics ---
+base_model_name: uma-s-1p1
+finetune_checkpoint_path:
+  _target_: fairchem.core.calculate.pretrained_mlip.pretrained_checkpoint_path_from_name
+  model_name: ${base_model_name}
+steps: 30000
+bf16: True
+# cpu_graph: True
+
+# --- Backbone Overrides (Required) ---
+max_neighbors: ${cluster.max_neighbors}
+regress_stress: False
+direct_forces: False
+
+normalizer_rmsd: 1.423
+iqa_intra_a_coef: 1.0
+iqa_inter_a_coef: 1.0
+iqa_inter_ab_coef: 1.0
+
+dataset_list: ["iqa_pkl"]
+exclude_keys: ["source", "sid"]
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_train}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: True
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_val}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: False
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+heads:
+  iqa_combined_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Edge_Head_Equiformer
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${tasks}
+    model:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      checkpoint_location: ${finetune_checkpoint_path}
+      overrides:
+        backbone:
+          moe_layer_type: pytorch
+          max_neighbors: ${max_neighbors}
+          regress_stress: ${regress_stress}
+          direct_forces: ${direct_forces}
+          output_edge_features: true
+        freeze_backbone: false
+        pass_through_head_outputs: true
+      heads: ${heads}
+    
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: 1e-4
+      weight_decay: 1e-3
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
+      lr_min_factor: 0.01
+      epochs: null
+      steps: ${steps}
+    print_every: 10
+    clip_grad_norm: 100
+    bf16: ${bf16}
+  max_epochs: null
+  max_steps: ${steps}
+  evaluate_every_n_steps: 1000
+  callbacks:
+    - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
+      job_config: ${job}
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 5000
+      max_saved_checkpoints: 3

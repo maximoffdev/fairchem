@@ -1,0 +1,220 @@
+defaults:
+  - cluster: local
+  - dataset: iqa_components
+  - tasks: iqa_decompose_subterms
+  - backbone: K4L2
+  - element_refs: iqa_isolated_atom_elem_refs
+  - _self_
+
+
+job:
+  device_type: ${cluster.device}
+  scheduler:
+    mode: ${cluster.mode}
+    ranks_per_node: ${cluster.ranks_per_node}
+    num_nodes: 1
+    slurm:
+      partition: ${cluster.partition}
+      mem_gb: ${cluster.mem_gb}
+      cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
+      setup_commands: ${cluster.setup_commands}
+  debug: ${cluster.debug}
+  run_dir: ${cluster.run_dir}
+  run_name: le-subterms_all_1-mean_and_rmsd_norm_all_chargecond_otf_300neighbors_6A_48h
+  logger:
+    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    _partial_: true
+    entity: lamerslab
+    project: iqa
+
+# --- Runtime Hyperparameters ---
+epochs: 300
+bf16: True
+
+# --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
+moe_layer_type: pytorch
+num_moe_experts: ${cluster.num_moe_experts}
+# False: train on the dataset's complete edge graph (labels line up row-for-row).
+# True: the backbone builds a radius graph (cutoff_radius/max_neighbors) instead and
+# the edge labels are re-indexed onto it for the loss, dropping pairs outside the
+# cutoff -- see fairchem.core.modules.edge_matching.
+
+# dataset     systems    atoms | avg@5A max@5A | avg@6A max@6A | avg@7A max@7A | avg@8A max@8A
+# test set      11740   172689 |  5.543     17 |  7.495     22 |  9.400     27 | 11.058     31
+# 1UAO              1      138 |  7.797     13 | 11.638     21 | 16.261     28 | 22.058     39
+
+otf_graph: True
+# IQA systems are isolated molecules with a zero cell -- build the radius graph
+# aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  always_use_pbc: False
+  regress_forces: False
+
+max_neighbors: ${cluster.max_neighbors}
+cutoff_radius: ${cluster.cutoff_radius}
+regress_stress: False
+direct_forces: False
+
+# iqa_kinetic_coef: 0.2
+# iqa_vne_coef: 0.2
+# iqa_vee_coef: 0.2
+# iqa_vee_c_coef: 0.2
+# iqa_vee_x_coef: 0.2
+# iqa_inter_coef: 1.0
+# # Edge-level coefficients
+# iqa_inter_edge_coef: 1.0
+# iqa_vee_edge_coef: 1.0
+# iqa_vne_edge_coef: 1.0
+# iqa_ven_edge_coef: 1.0
+# iqa_vnn_edge_coef: 1.0
+# Atom-level subterm normalizers (residual after isolated-atom element refs;
+# recomputed on full sumformulasplit/train, 1.72M atoms, isolated_atom_elem_refs)
+normalizer_mean_iqa_kinetic: -0.00396051  # old: 2.50507
+normalizer_rmsd_iqa_kinetic: 20.0982  # old: 21.4319
+normalizer_mean_iqa_vne: -0.010553  # old: -26.9547
+normalizer_rmsd_iqa_vne: 66.6655  # old: 94.6618
+normalizer_mean_iqa_vee: 0.0101651  # old: 31.3875
+normalizer_rmsd_iqa_vee: 38.4914  # old: 72.3848
+# normalizer_mean_iqa_vee_c: 493.686
+# normalizer_rmsd_iqa_vee_c: 909.29
+# normalizer_mean_iqa_vee_x: -100.909
+# normalizer_rmsd_iqa_vee_x: 140.044
+iqa_kinetic_coef: 1.0
+iqa_vne_coef: 1.0
+iqa_vee_coef: 1.0
+# iqa_vee_c_coef: 1.0
+# iqa_vee_x_coef: 1.0
+#iqa_inter_a_coef: 0.0
+# Edge-level subterm normalizers (halved for directed graph; recomputed on
+# full sumformulasplit/train, 26.3M directed edges)
+normalizer_mean_iqa_vne_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_vne_ab: 74.6141  # old: 74.5099
+normalizer_mean_iqa_vee_ab: 40.3791  # old: 40.3855
+normalizer_rmsd_iqa_vee_ab: 72.9996  # old: 72.8833
+normalizer_mean_iqa_ven_ab: -41.9039  # old: -41.9057
+normalizer_rmsd_iqa_ven_ab: 74.6141  # old: 74.5099
+# V_nn is deterministic (IQA_Vnn_Analytic_Head outputs the physical value directly),
+# so use an identity normalizer: denorm(x) = x*1 + 0 leaves the value untouched.
+normalizer_mean_iqa_vnn_ab: 0.0  # analytic head; was 42.738 when learned
+normalizer_rmsd_iqa_vnn_ab: 1.0  # analytic head; was 74.1815 when learned
+# Edge-level subterm coefficients
+iqa_vne_ab_coef: 1.0
+iqa_vee_ab_coef: 1.0
+iqa_ven_ab_coef: 1.0
+# V_nn is deterministic (analytic head) -> nothing to learn, keep it out of the loss.
+iqa_vnn_ab_coef: 0.0
+
+# --- Dataset Setup ---
+dataset_list: ["iqa_pkl"]
+exclude_keys: ["source", "sid"]
+
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_train}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: True
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_val}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: False
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+# --- Head architecture ---
+# True:  all six learned subterm tasks (3 intra-atomic node terms + 3 pair edge
+#        terms) share ONE SO(2) attention trunk; only the small output stacks are
+#        task specific. ~1.6M head params for K4L2.
+# False: one fully independent trunk per task -- the previous layout, identical
+#        parameterization to declaring six separate heads. ~8.5M head params.
+# The three pair terms V_ne(A,B), V_ee(A,B), V_en(A,B) and the intra terms are all
+# functionals of the same density, so the shared trunk is a physical prior rather
+# than a compromise, and it gets 6x the gradient signal.
+share_head_trunk: False
+# With a shared trunk: keep the first (wide -> hidden) output projection per task
+# for a little task-specific capacity. False shares it too, leaving only the final
+# SO3_Linear -> 1 per task. Ignored when share_head_trunk is False.
+per_task_proj_1: True
+
+heads:
+  # One trunk, six task-specific output stacks (or six independent trunks when
+  # share_head_trunk is False).
+  iqa_subterms_head:
+    module: fairchem.core.models.uma.escn_md.IQA_MultiTaskSO2Head
+    share_trunk: ${share_head_trunk}
+    per_task_proj_1: ${per_task_proj_1}
+    # Intra-atomic subterms, predicted per atom.
+    node_task_names: [iqa_kinetic, iqa_vne, iqa_vee]
+    # Pairwise inter subterms, predicted per directed edge.
+    edge_task_names: [iqa_vne_ab, iqa_vee_ab, iqa_ven_ab]
+  # V_nn is computed deterministically (Coulomb's law) rather than predicted.
+  iqa_vnn_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Vnn_Analytic_Head
+    node_prediction: false
+    edge_prediction: true
+    edge_task_name: iqa_vnn_ab
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${tasks}
+    model:
+      _target_: fairchem.core.models.base.HydraModel
+      backbone: ${backbone}
+      pass_through_head_outputs: true
+      # _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      # checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/be2896459a03fcde05e20d2fcefd11f450601fce/checkpoints/uma-s-1p2.pt
+      # overrides:
+      #   freeze_backbone: true
+      #   pass_through_head_outputs: false
+      heads: ${heads}
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: 8e-4
+      weight_decay: 1e-3
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
+      lr_min_factor: 0.01
+      epochs: ${epochs}
+      steps: null
+    print_every: 10
+    clip_grad_norm: 100
+    bf16: ${bf16}
+  evaluate_every_n_steps: 500
+  max_epochs: ${epochs}
+  max_steps: null
+  callbacks:
+    - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
+      job_config: ${job}
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 5000
+      max_saved_checkpoints: 3
+      save_best_val_checkpoint: true
