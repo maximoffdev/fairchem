@@ -95,6 +95,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         ff_type: str = "grid",
         activation_checkpointing: bool = False,
         chg_spin_emb_type: Literal["pos_emb", "lin_emb", "rand_emb"] = "pos_emb",
+        charge_conditioning: Literal["total", "atomic"] = "total",
+        atomic_charge_emb_type: Literal["pos_emb", "lin_emb"] = "pos_emb",
         cs_emb_grad: bool = False,
         dataset_emb_grad: bool = False,
         dataset_list: list[str] | None = None,
@@ -137,6 +139,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
 
         # related to charge spin dataset system embedding
         self.chg_spin_emb_type = chg_spin_emb_type
+        assert charge_conditioning in ["total", "atomic"]
+        self.charge_conditioning = charge_conditioning
         self.cs_emb_grad = cs_emb_grad
         self.dataset_emb_grad = dataset_emb_grad
         self.dataset_list = dataset_list
@@ -168,13 +172,22 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             self.max_num_elements, self.sphere_channels
         )
 
-        # charge / spin embedding
-        self.charge_embedding = ChgSpinEmbedding(
-            self.chg_spin_emb_type,
-            "charge",
-            self.sphere_channels,
-            grad=self.cs_emb_grad,
-        )
+        # charge / spin embedding. With atomic charge conditioning the charge embedding
+        # is per atom, so the charge/spin/dataset mix below becomes per atom as well.
+        if self.charge_conditioning == "total":
+            self.charge_embedding = ChgSpinEmbedding(
+                self.chg_spin_emb_type,
+                "charge",
+                self.sphere_channels,
+                grad=self.cs_emb_grad,
+            )
+        else:
+            self.charge_embedding = ChgSpinEmbedding(
+                atomic_charge_emb_type,
+                "atomic_charge",
+                self.sphere_channels,
+                grad=self.cs_emb_grad,
+            )
         self.spin_embedding = ChgSpinEmbedding(
             self.chg_spin_emb_type,
             "spin",
@@ -353,18 +366,49 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             data_dict["pos"].requires_grad = True
         return displacement, orig_cell
 
-    def csd_embedding(self, charge, spin, dataset):
+    def csd_embedding(self, data_dict: AtomicData) -> tuple[torch.Tensor, torch.Tensor]:
+        """Mixed charge/spin/dataset embedding.
+
+        Returns the per-system embedding (nsystems, C), which drives MOLE routing, and
+        the per-node embedding (natoms_full, C), which is added to the node features.
+        Total charge conditioning broadcasts the system embedding to its atoms; atomic
+        charge conditioning mixes per atom and mean-pools to get the system embedding.
+        """
         with record_function("charge spin dataset embeddings"):
-            # Add charge, spin, and dataset embeddings
-            chg_emb = self.charge_embedding(charge)
-            spin_emb = self.spin_embedding(spin)
+            batch = data_dict["batch"]
+            if self.charge_conditioning == "total":
+                if "atomic_charges" in data_dict:
+                    raise ValueError(
+                        "Input carries atomic_charges but the backbone uses "
+                        "charge_conditioning='total'. Set charge_conditioning='atomic' "
+                        "or drop atomic_charge_key from the dataset config."
+                    )
+                chg_emb = self.charge_embedding(data_dict["charge"])
+            else:
+                if "atomic_charges" not in data_dict:
+                    raise KeyError(
+                        "charge_conditioning='atomic' requires per-atom "
+                        "'atomic_charges' in the input (set atomic_charge_key in "
+                        "the dataset config)."
+                    )
+                chg_emb = self.charge_embedding(data_dict["atomic_charges"])
+            embs = [chg_emb, self.spin_embedding(data_dict["spin"])]
             if self.use_dataset_embedding:
+                dataset = data_dict.get("dataset", default=None)
                 assert dataset is not None
-                dataset_emb = self.dataset_embedding(dataset)
-                return torch.nn.SiLU()(
-                    self.mix_csd(torch.cat((chg_emb, spin_emb, dataset_emb), dim=1))
-                )
-            return torch.nn.SiLU()(self.mix_csd(torch.cat((chg_emb, spin_emb), dim=1)))
+                embs.append(self.dataset_embedding(dataset))
+
+            if self.charge_conditioning == "total":
+                sys_emb = torch.nn.SiLU()(self.mix_csd(torch.cat(embs, dim=1)))
+                return sys_emb, sys_emb[batch]
+
+            nsystems = data_dict["spin"].shape[0]
+            embs[1:] = [emb[batch] for emb in embs[1:]]
+            node_emb = torch.nn.SiLU()(self.mix_csd(torch.cat(embs, dim=1)))
+            sys_emb = torch_geometric.utils.scatter(
+                node_emb, batch, dim=0, dim_size=nsystems, reduce="mean"
+            )
+            return sys_emb, node_emb
 
     def _generate_graph(self, data_dict):
         if self.otf_graph:
@@ -442,11 +486,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         data_dict["atomic_numbers_full"] = data_dict["atomic_numbers"]
         data_dict["batch_full"] = data_dict["batch"]
 
-        csd_mixed_emb = self.csd_embedding(
-            charge=data_dict["charge"],
-            spin=data_dict["spin"],
-            dataset=data_dict.get("dataset", default=None),
-        )
+        csd_mixed_emb, csd_node_emb_full = self.csd_embedding(data_dict)
 
         self.set_MOLE_coefficients(
             atomic_numbers_full=data_dict["atomic_numbers_full"],
@@ -500,7 +540,10 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             )
             x_message[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"])
 
-        sys_node_embedding = csd_mixed_emb[data_dict["batch"]]
+        if gp_utils.initialized():
+            sys_node_embedding = csd_node_emb_full[graph_dict["node_partition"]]
+        else:
+            sys_node_embedding = csd_node_emb_full
         x_message[:, 0, :] = x_message[:, 0, :] + sys_node_embedding
 
         ###

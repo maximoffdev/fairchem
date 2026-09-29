@@ -223,6 +223,7 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
             composition_sum,
             getattr(data, "charge", None),
             getattr(data, "spin", None),
+            getattr(data, "atomic_charges", None),
         )
         return comp_charge_spin, getattr(data, "dataset", [None])
 
@@ -276,6 +277,12 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
                 assert (
                     self.merged_on[0][2] == this_sys[0][2]
                 ), f"Cannot run on merged model on system. Spin is diferrent {self.merged_on[0][2]} vs {this_sys[0][2]}"
+                merged_q, this_q = self.merged_on[0][3], this_sys[0][3]
+                assert (merged_q is None and this_q is None) or (
+                    merged_q is not None
+                    and this_q is not None
+                    and torch.equal(merged_q, this_q)
+                ), "Cannot run on merged model on system. Atomic charges are different"
                 assert (
                     self.merged_on[1] == this_sys[1]
                 ), f"Cannot run on merged model on system. Dataset is diferrent {self.merged_on[1]} vs {this_sys[1]}"

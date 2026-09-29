@@ -12,8 +12,15 @@ iqa_train:
   src: ${cluster.data_root_dir}/train
   name: ${dataset_list[0]}
   ht2ev: true
-  # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone
+  # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone.
+  # To condition on per-atom charges instead, replace this with
+  # `atomic_charge_key: q(A)` (in iqa_val too) and set
+  # `backbone.charge_conditioning: atomic` in the experiment config.
   charge_key: q_total
+  # Std (e) of zero-mean Gaussian noise on the atomic charge input (train only, needs
+  # atomic_charge_key). 0.02 is a good value: about the error of predicted
+  # charges, well below chemically meaningful charge differences (~0.1 e).
+  sigma_atomic_charge: 0.0
   key_mapping:
     energy: e_total
     iqa_kinetic: T(A)

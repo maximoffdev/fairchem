@@ -122,6 +122,7 @@ def predict_iqa_pkl(
     input_path: str | Path,
     task_name: str | None = None,
     max_items: int | None = None,
+    atomic_charge_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Predict IQA atom- and edge-level energies for PKL inputs.
@@ -130,6 +131,8 @@ def predict_iqa_pkl(
         input_path: Directory with .pkl files or a single .pkl file.
         task_name: Dataset/task name from the checkpoint (e.g., iqa_pkl).
         max_items: Optional cap on number of structures to process.
+        atomic_charge_key: PKL key of the per-atom charges, required for models
+            trained with charge_conditioning='atomic' (e.g. 'q(A)').
 
     Returns:
         A dictionary ready to be serialized as JSON.
@@ -142,7 +145,9 @@ def predict_iqa_pkl(
     dataset_root = path if path.is_dir() else path.parent
     task_name = _get_task_name(predict_unit, task_name)
 
-    dataset = IQAPKLDataset(src=str(dataset_root), name=task_name)
+    dataset = IQAPKLDataset(
+        src=str(dataset_root), name=task_name, atomic_charge_key=atomic_charge_key
+    )
     indices = _resolve_indices(dataset, path, max_items)
 
     results = {

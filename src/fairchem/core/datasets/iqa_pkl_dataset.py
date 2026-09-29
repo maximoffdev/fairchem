@@ -56,6 +56,8 @@ DIPOLE_KEYS = frozenset(
 # q(A) are in electrons; without this they fall through to the Hartree -> eV
 # branch in __getitem__ and come out scaled by 27.2.
 DIMENSIONLESS_KEYS = frozenset({"iqa_charge"})
+# Max deviation of sum(q(A)) from an integer before a sample is rejected as broken.
+ATOMIC_CHARGE_SUM_TOL = 0.1
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
@@ -116,7 +118,9 @@ class IQAPKLDataset(BaseDataset):
         ht2ev: bool = True,
         force_ht2ev: bool = True,
         au2debye: bool = True,
-        charge_key: str = "q_total",
+        charge_key: str | None = None,
+        atomic_charge_key: str | None = None,
+        sigma_atomic_charge: float = 0.0,
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -126,10 +130,30 @@ class IQAPKLDataset(BaseDataset):
         self.ht2ev = ht2ev
         self.force_ht2ev = force_ht2ev
         self.au2debye = au2debye
-        # Total molecular charge, fed to the backbone's ChgSpinEmbedding for charge
-        # conditioning. Note the pkls also carry a 'Charge' key, but that is the
-        # per-atom nuclear charge Z, not the system charge -- do not point here at it.
+        # Charge conditioning is either on the total molecular charge (charge_key,
+        # default 'q_total') -> AtomicData.charge, or on per-atom charges
+        # (atomic_charge_key, e.g. 'q(A)') -> AtomicData.atomic_charges, which requires
+        # charge_conditioning='atomic' on the backbone. Note the pkls also carry a
+        # 'Charge' key, but that is the per-atom nuclear charge Z -- do not point
+        # either key at it.
+        if charge_key is not None and atomic_charge_key is not None:
+            raise ValueError(
+                f"charge_key ('{charge_key}') and atomic_charge_key "
+                f"('{atomic_charge_key}') are mutually exclusive"
+            )
+        if charge_key is None and atomic_charge_key is None:
+            charge_key = "q_total"
         self.charge_key = charge_key
+        self.atomic_charge_key = atomic_charge_key
+        # Std (e) of Gaussian noise on the atomic charge input, for robustness to
+        # imperfect charges at inference. Set it on the training dataset only.
+        if sigma_atomic_charge < 0:
+            raise ValueError(
+                f"sigma_atomic_charge must be >= 0, got {sigma_atomic_charge}"
+            )
+        if sigma_atomic_charge > 0 and atomic_charge_key is None:
+            raise ValueError("sigma_atomic_charge > 0 requires atomic_charge_key")
+        self.sigma_atomic_charge = sigma_atomic_charge
         self._warned_missing_charge = False
         self.name = name
         self.dataset_name = name
@@ -213,9 +237,16 @@ class IQAPKLDataset(BaseDataset):
         nedges = torch.tensor([E], dtype=torch.long)
         natoms = torch.tensor([N], dtype=torch.long)
         
-        # Total molecular charge -> AtomicData.charge, consumed by ChgSpinEmbedding.
-        q_total = _first_present(d, self.charge_key)
-        if q_total is not None:
+        atomic_charges = None
+        if self.atomic_charge_key is not None:
+            atomic_charges = self._load_atomic_charges(d, path, N, pos.dtype)
+            charge = self._total_charge_from_atomic(atomic_charges, path)
+            if self.sigma_atomic_charge > 0:
+                # zero-mean per molecule, so the noisy charges keep the total charge
+                noise = torch.randn_like(atomic_charges) * self.sigma_atomic_charge
+                atomic_charges = atomic_charges + noise - noise.mean()
+        elif (q_total := _first_present(d, self.charge_key)) is not None:
+            # Total molecular charge -> AtomicData.charge, consumed by ChgSpinEmbedding.
             charge = torch.tensor([int(q_total)], dtype=torch.long)
         else:
             # Silently treating charged systems as neutral would poison the
@@ -260,6 +291,8 @@ class IQAPKLDataset(BaseDataset):
         )
 
         ad.dataset_name = self.name
+        if atomic_charges is not None:
+            ad.atomic_charges = atomic_charges
 
         for out_key, val in labels.items():
             if out_key == "energy":
@@ -288,6 +321,37 @@ class IQAPKLDataset(BaseDataset):
             setattr(ad, out_key, val)
 
         return ad
+
+    def _load_atomic_charges(
+        self, d: Dict[str, Any], path: str, natoms: int, dtype: torch.dtype
+    ) -> torch.Tensor:
+        if self.atomic_charge_key not in d:
+            raise KeyError(
+                f"atomic_charge_key '{self.atomic_charge_key}' not found in {path}. "
+                f"Available keys: {sorted(d.keys())[:50]}"
+            )
+        q = torch.as_tensor(d[self.atomic_charge_key], dtype=dtype).reshape(-1)
+        if q.shape[0] != natoms:
+            raise ValueError(
+                f"atomic_charge_key '{self.atomic_charge_key}' in {path} has "
+                f"{q.shape[0]} entries, expected one per atom ({natoms})"
+            )
+        return q
+
+    @staticmethod
+    def _total_charge_from_atomic(
+        atomic_charges: torch.Tensor, path: str
+    ) -> torch.Tensor:
+        # AtomicData.charge is a required field; derive it from the atomic charges,
+        # which sum to the integer total charge up to the AIM integration error.
+        q_sum = float(atomic_charges.sum())
+        q_total = round(q_sum)
+        if abs(q_sum - q_total) > ATOMIC_CHARGE_SUM_TOL:
+            raise ValueError(
+                f"Atomic charges in {path} sum to {q_sum:.4f}, which is more than "
+                f"{ATOMIC_CHARGE_SUM_TOL} e off an integer total charge"
+            )
+        return torch.tensor([q_total], dtype=torch.long)
 
     @property
     def metadata(self):
