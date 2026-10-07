@@ -1,0 +1,25 @@
+# Atomic dipole vector Mu(A), in Debye (converted from a.u. by IQAPKLDataset).
+# `name` is looked up both as the label on the batch (-> key_mapping in
+# dataset/iqa_components.yaml) and as the head name in the model config;
+# `property` is the key the head returns inside its output dict.
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: dipole_vector
+  level: atom
+  property: dipole_vector
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.L2NormLoss
+    coefficient: ${dipole_vector_coef}
+  out_spec:
+    dim: [3]
+    dtype: float32
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: ${normalizer_rmsd}
+  metrics:
+    - mae
+    - cosine_similarity
+    - magnitude_error

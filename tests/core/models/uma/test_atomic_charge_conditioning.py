@@ -106,3 +106,22 @@ def test_moe_backbone_routes_on_pooled_atomic_charge_embedding() -> None:
     out = backbone(_batch(with_atomic_charges=True))
     assert out["node_embedding"].shape[0] == 7
     assert backbone.global_mole_tensors.expert_mixing_coefficients.shape == (2, 2)
+
+
+def test_no_charge_conditioning_ignores_charge() -> None:
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(charge_conditioning="none", **BACKBONE_KWARGS)
+    assert backbone.charge_embedding is None
+    # spin + dataset only
+    assert backbone.mix_csd.in_features == 2 * BACKBONE_KWARGS["sphere_channels"]
+    batch = _batch(with_atomic_charges=False)
+    out = backbone(batch.clone())["node_embedding"]
+    charged = batch.clone()
+    charged.charge = charged.charge + 1
+    torch.testing.assert_close(out, backbone(charged)["node_embedding"])
+
+
+def test_no_charge_conditioning_rejects_atomic_charges() -> None:
+    backbone = eSCNMDBackbone(charge_conditioning="none", **BACKBONE_KWARGS)
+    with pytest.raises(ValueError, match="atomic_charges"):
+        backbone(_batch(with_atomic_charges=True))

@@ -21,6 +21,10 @@ iqa_train:
   # atomic_charge_key). 0.02 is a good value: about the error of predicted
   # charges, well below chemically meaningful charge differences (~0.1 e).
   sigma_atomic_charge: 0.0
+  # Mask atoms with |L(A)| > lagrangian_cutoff (a.u., AIM integration error) and all
+  # edges touching them: their atom/edge labels become NaN and drop out of the loss.
+  # System labels (e_total) are kept. null disables the masking.
+  lagrangian_cutoff: 5.0e-4
   key_mapping:
     energy: e_total
     iqa_kinetic: T(A)
@@ -46,6 +50,9 @@ iqa_val:
   ht2ev: true
   # See iqa_train above.
   charge_key: q_total
+  # Off for validation, so val metrics cover all atoms; set it to the iqa_train value
+  # to evaluate on well-integrated atoms only.
+  lagrangian_cutoff: null
   key_mapping:
     energy: e_total
     iqa_kinetic: T(A)

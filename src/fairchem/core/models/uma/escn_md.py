@@ -95,7 +95,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         ff_type: str = "grid",
         activation_checkpointing: bool = False,
         chg_spin_emb_type: Literal["pos_emb", "lin_emb", "rand_emb"] = "pos_emb",
-        charge_conditioning: Literal["total", "atomic"] = "total",
+        charge_conditioning: Literal["total", "atomic", "none"] = "total",
         atomic_charge_emb_type: Literal["pos_emb", "lin_emb"] = "pos_emb",
         cs_emb_grad: bool = False,
         dataset_emb_grad: bool = False,
@@ -139,7 +139,7 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
 
         # related to charge spin dataset system embedding
         self.chg_spin_emb_type = chg_spin_emb_type
-        assert charge_conditioning in ["total", "atomic"]
+        assert charge_conditioning in ["total", "atomic", "none"]
         self.charge_conditioning = charge_conditioning
         self.cs_emb_grad = cs_emb_grad
         self.dataset_emb_grad = dataset_emb_grad
@@ -174,6 +174,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
 
         # charge / spin embedding. With atomic charge conditioning the charge embedding
         # is per atom, so the charge/spin/dataset mix below becomes per atom as well.
+        # Without charge conditioning the charge is left out of that mix entirely.
+        self.charge_embedding: ChgSpinEmbedding | None
         if self.charge_conditioning == "total":
             self.charge_embedding = ChgSpinEmbedding(
                 self.chg_spin_emb_type,
@@ -181,13 +183,15 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
                 self.sphere_channels,
                 grad=self.cs_emb_grad,
             )
-        else:
+        elif self.charge_conditioning == "atomic":
             self.charge_embedding = ChgSpinEmbedding(
                 atomic_charge_emb_type,
                 "atomic_charge",
                 self.sphere_channels,
                 grad=self.cs_emb_grad,
             )
+        else:
+            self.charge_embedding = None
         self.spin_embedding = ChgSpinEmbedding(
             self.chg_spin_emb_type,
             "spin",
@@ -202,11 +206,15 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
                 grad=self.dataset_emb_grad,
                 dataset_list=self.dataset_list,
             )
-            # mix charge, spin, dataset embeddings
-            self.mix_csd = nn.Linear(3 * self.sphere_channels, self.sphere_channels)
-        else:
-            # mix charge, spin
-            self.mix_csd = nn.Linear(2 * self.sphere_channels, self.sphere_channels)
+        # mix the charge (if conditioned on), spin and dataset (if used) embeddings
+        num_csd_embeddings = (
+            1
+            + (self.charge_embedding is not None)
+            + int(self.use_dataset_embedding)
+        )
+        self.mix_csd = nn.Linear(
+            num_csd_embeddings * self.sphere_channels, self.sphere_channels
+        )
 
         # edge distance embedding
         self.cutoff = cutoff
@@ -371,39 +379,48 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
 
         Returns the per-system embedding (nsystems, C), which drives MOLE routing, and
         the per-node embedding (natoms_full, C), which is added to the node features.
-        Total charge conditioning broadcasts the system embedding to its atoms; atomic
-        charge conditioning mixes per atom and mean-pools to get the system embedding.
+        Total (or no) charge conditioning broadcasts the system embedding to its atoms;
+        atomic charge conditioning mixes per atom and mean-pools to get the system
+        embedding. Without charge conditioning the input charge is ignored.
         """
         with record_function("charge spin dataset embeddings"):
             batch = data_dict["batch"]
-            if self.charge_conditioning == "total":
-                if "atomic_charges" in data_dict:
-                    raise ValueError(
-                        "Input carries atomic_charges but the backbone uses "
-                        "charge_conditioning='total'. Set charge_conditioning='atomic' "
-                        "or drop atomic_charge_key from the dataset config."
-                    )
-                chg_emb = self.charge_embedding(data_dict["charge"])
-            else:
+            if self.charge_conditioning == "atomic":
                 if "atomic_charges" not in data_dict:
                     raise KeyError(
                         "charge_conditioning='atomic' requires per-atom "
                         "'atomic_charges' in the input (set atomic_charge_key in "
                         "the dataset config)."
                     )
-                chg_emb = self.charge_embedding(data_dict["atomic_charges"])
-            embs = [chg_emb, self.spin_embedding(data_dict["spin"])]
+            elif "atomic_charges" in data_dict:
+                raise ValueError(
+                    "Input carries atomic_charges but the backbone uses "
+                    f"charge_conditioning='{self.charge_conditioning}'. Set "
+                    "charge_conditioning='atomic' or drop atomic_charge_key from the "
+                    "dataset config."
+                )
+            # per-system spin (and dataset) embeddings; the charge embedding, if any,
+            # is prepended, keeping the [charge, spin, dataset] order of mix_csd
+            embs = [self.spin_embedding(data_dict["spin"])]
             if self.use_dataset_embedding:
                 dataset = data_dict.get("dataset", default=None)
                 assert dataset is not None
                 embs.append(self.dataset_embedding(dataset))
 
+            if self.charge_embedding is None:
+                sys_emb = torch.nn.SiLU()(self.mix_csd(torch.cat(embs, dim=1)))
+                return sys_emb, sys_emb[batch]
+
             if self.charge_conditioning == "total":
+                embs = [self.charge_embedding(data_dict["charge"]), *embs]
                 sys_emb = torch.nn.SiLU()(self.mix_csd(torch.cat(embs, dim=1)))
                 return sys_emb, sys_emb[batch]
 
             nsystems = data_dict["spin"].shape[0]
-            embs[1:] = [emb[batch] for emb in embs[1:]]
+            embs = [
+                self.charge_embedding(data_dict["atomic_charges"]),
+                *(emb[batch] for emb in embs),
+            ]
             node_emb = torch.nn.SiLU()(self.mix_csd(torch.cat(embs, dim=1)))
             sys_emb = torch_geometric.utils.scatter(
                 node_emb, batch, dim=0, dim_size=nsystems, reduce="mean"

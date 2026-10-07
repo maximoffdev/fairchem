@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import pickle
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 import torch
 import torch_geometric
@@ -58,6 +58,19 @@ DIPOLE_KEYS = frozenset(
 DIMENSIONLESS_KEYS = frozenset({"iqa_charge"})
 # Max deviation of sum(q(A)) from an integer before a sample is rejected as broken.
 ATOMIC_CHARGE_SUM_TOL = 0.1
+# Per-atom AIM integral of the Laplacian of the density. It vanishes for an exactly
+# integrated basin, so |L(A)| measures the integration error of the atom's labels.
+LAGRANGIAN_KEY = "L(A)"
+
+
+def label_level(in_key: str) -> Literal["system", "atom", "edge"]:
+    """Level of a pkl label, read off the AIMAll naming: 'X(A,B)' labels are per
+    directed edge, other 'X(A...)' labels per atom, and the rest per system."""
+    if "(A,B)" in in_key:
+        return "edge"
+    if "(A" in in_key:
+        return "atom"
+    return "system"
 
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
@@ -121,6 +134,7 @@ class IQAPKLDataset(BaseDataset):
         charge_key: str | None = None,
         atomic_charge_key: str | None = None,
         sigma_atomic_charge: float = 0.0,
+        lagrangian_cutoff: float | None = None,
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -154,6 +168,14 @@ class IQAPKLDataset(BaseDataset):
         if sigma_atomic_charge > 0 and atomic_charge_key is None:
             raise ValueError("sigma_atomic_charge > 0 requires atomic_charge_key")
         self.sigma_atomic_charge = sigma_atomic_charge
+        # Atoms with |L(A)| above this (a.u.) get NaN atom labels, and so do the
+        # labels of their edges; the torch.isfinite output masks in mlip_unit then
+        # drop them from loss and metrics. None disables the masking.
+        if lagrangian_cutoff is not None and lagrangian_cutoff <= 0:
+            raise ValueError(
+                f"lagrangian_cutoff must be > 0 or None, got {lagrangian_cutoff}"
+            )
+        self.lagrangian_cutoff = lagrangian_cutoff
         self._warned_missing_charge = False
         self.name = name
         self.dataset_name = name
@@ -222,6 +244,9 @@ class IQAPKLDataset(BaseDataset):
             # single scalar
             else:
                 labels[out_key] = t.view(1) if t.ndim == 0 else t
+
+        if self.lagrangian_cutoff is not None:
+            self._mask_poorly_integrated_atoms(d, path, labels, edge_index, N)
 
         # user key mapping (e.g., {"energy": "e_total"})
         # for out_key, in_key in self.key_mapping.items():          #old version, not suited for tensors
@@ -321,6 +346,51 @@ class IQAPKLDataset(BaseDataset):
             setattr(ad, out_key, val)
 
         return ad
+
+    def _mask_poorly_integrated_atoms(
+        self,
+        d: dict[str, Any],
+        path: str,
+        labels: dict[str, torch.Tensor],
+        edge_index: torch.Tensor,
+        natoms: int,
+    ) -> None:
+        """Set to NaN, in place in `labels`, the atom labels of atoms with
+        |L(A)| > lagrangian_cutoff and the edge labels of edges touching them.
+        System labels (e.g. e_total) do not come from the AIM integration and are
+        kept."""
+        if LAGRANGIAN_KEY not in d:
+            raise KeyError(
+                f"lagrangian_cutoff is set but '{LAGRANGIAN_KEY}' is missing from "
+                f"{path}. Available keys: {sorted(d.keys())[:50]}"
+            )
+        lagrangian = torch.as_tensor(d[LAGRANGIAN_KEY]).reshape(-1)
+        if lagrangian.shape[0] != natoms:
+            raise ValueError(
+                f"'{LAGRANGIAN_KEY}' in {path} has {lagrangian.shape[0]} entries, "
+                f"expected one per atom ({natoms})"
+            )
+        bad_atoms = lagrangian.abs() > self.lagrangian_cutoff
+        if not bad_atoms.any():
+            return
+        masks = {
+            "atom": bad_atoms,
+            "edge": bad_atoms[edge_index[0]] | bad_atoms[edge_index[1]],
+        }
+        for out_key, in_key in self.key_mapping.items():
+            level = label_level(in_key)
+            if level == "system" or out_key not in labels:
+                continue
+            mask = masks[level]
+            val = labels[out_key]
+            if val.shape[0] != mask.shape[0]:
+                raise ValueError(
+                    f"'{in_key}' in {path} is named as a per-{level} label but has "
+                    f"{val.shape[0]} rows, expected {mask.shape[0]}"
+                )
+            val = val.clone()
+            val[mask] = float("nan")
+            labels[out_key] = val
 
     def _load_atomic_charges(
         self, d: Dict[str, Any], path: str, natoms: int, dtype: torch.dtype

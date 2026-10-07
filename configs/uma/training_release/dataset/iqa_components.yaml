@@ -5,6 +5,10 @@ iqa_train:
   ht2ev: true
   # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone
   charge_key: q_total
+  # Mask atoms with |L(A)| > lagrangian_cutoff (a.u., AIM integration error) and all
+  # edges touching them: their atom/edge labels become NaN and drop out of the loss.
+  # System labels (e_total) are kept. null disables the masking.
+  lagrangian_cutoff: 5.0e-4
   key_mapping:
     energy: e_total
     iqa_kinetic: T(A)
@@ -37,6 +41,9 @@ iqa_val:
   ht2ev: true
   # See iqa_train above.
   charge_key: q_total
+  # Off for validation, so val metrics cover all atoms; set it to the iqa_train value
+  # to evaluate on well-integrated atoms only.
+  lagrangian_cutoff: null
   key_mapping:
     energy: e_total
     iqa_kinetic: T(A)
