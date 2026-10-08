@@ -1,0 +1,22 @@
+# Run 8: q(A) model without total-charge conditioning and without the q(A) sum
+# constraint, as 5-fold cross-validation over the same folds as iqa_charge_kfold.yaml:
+#   fairchem -c configs/uma/training_release/iqa_charge_nochg_kfold.yaml fold=0   # ... fold=4
+defaults:
+  - iqa_charge_nochg_pretrain
+  - _self_
+
+fold: ???
+num_folds: 5
+
+job:
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-kfold${num_folds}-fold${fold}_nochargecond_noqsum_lagcut5e-4_otf_300neighbors_9A_40h
+
+heads:
+  iqa_charge:
+    conserve_total_charge: False
+
+dataset:
+  iqa_train:
+    fold_file: ${cluster.data_root_dir}/kfold${num_folds}_sumformula.csv
+    exclude_folds:
+      - ${fold}

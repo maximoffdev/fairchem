@@ -1,3 +1,5 @@
+# DEPRECATED (2026-10-08): does not compose: defaults reference the removed tasks/iqa_decompose.
+# No maintained replacement for fine-tuning from a UMA checkpoint.
 defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_components
@@ -103,7 +105,7 @@ runner:
         freeze_backbone: false
         pass_through_head_outputs: true
       heads: ${heads}
-    
+
     optimizer_fn:
       _target_: torch.optim.AdamW
       _partial_: true

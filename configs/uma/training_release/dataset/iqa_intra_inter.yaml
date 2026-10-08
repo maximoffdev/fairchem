@@ -7,6 +7,7 @@
 #   AttributeError: 'AtomicData' object has no attribute 'dipole_intra'
 # The intra/inter task (tasks/iqa_decompose_intra_inter.yaml) never consumes the
 # dipole labels, so they are dropped here. Dipole runs keep using iqa_components.yaml.
+# Since 2026-10-09 that pkl is moved to sumformulasplit/excluded_missing_dipole/.
 iqa_train:
   _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
   src: ${cluster.data_root_dir}/train

@@ -171,3 +171,67 @@ def test_non_positive_lagrangian_cutoff_raises(tmp_path: Path) -> None:
 )
 def test_label_level(in_key: str, level: str) -> None:
     assert label_level(in_key) == level
+
+
+def _write_named_pkls(root: Path, natoms_by_name: dict[str, int]) -> None:
+    for name, n in natoms_by_name.items():
+        sample = {
+            "pos": np.arange(3 * n, dtype=float).reshape(n, 3),
+            "atomic_numbers": np.ones(n, dtype=int),
+            "edge_index": np.zeros((2, 0), dtype=int),
+            "q_total": 0,
+        }
+        with open(root / f"{name}.pkl", "wb") as f:
+            pickle.dump(sample, f)
+
+
+def _write_fold_file(path: Path, fold_by_name: dict[str, int]) -> None:
+    lines = ["file,fold,formula"] + [
+        f"{name}.pkl,{fold},x" for name, fold in fold_by_name.items()
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_fold_selection_include_and_exclude(tmp_path: Path) -> None:
+    _write_named_pkls(tmp_path, {"a": 2, "b": 3, "c": 4})
+    folds = tmp_path / "folds.csv"
+    _write_fold_file(folds, {"a": 0, "b": 1, "c": 1})
+    held = IQAPKLDataset(src=str(tmp_path), fold_file=str(folds), include_folds=[1])
+    rest = IQAPKLDataset(src=str(tmp_path), fold_file=str(folds), exclude_folds=[1])
+    assert [p.split("/")[-1] for p in held.file_paths] == ["b.pkl", "c.pkl"]
+    assert [p.split("/")[-1] for p in rest.file_paths] == ["a.pkl"]
+    # metadata is aligned with the selected files, not with the directory
+    assert held.get_metadata("natoms", [0, 1]).tolist() == [3, 4]
+    assert rest.get_metadata("natoms", [0]).tolist() == [2]
+
+
+def test_fold_selection_rejects_unassigned_files(tmp_path: Path) -> None:
+    _write_named_pkls(tmp_path, {"a": 2, "b": 3})
+    folds = tmp_path / "folds.csv"
+    _write_fold_file(folds, {"a": 0})
+    with pytest.raises(ValueError, match="have no fold"):
+        IQAPKLDataset(src=str(tmp_path), fold_file=str(folds), include_folds=[0])
+
+
+def test_fold_selection_needs_exactly_one_selector(tmp_path: Path) -> None:
+    _write_named_pkls(tmp_path, {"a": 2})
+    folds = tmp_path / "folds.csv"
+    _write_fold_file(folds, {"a": 0})
+    with pytest.raises(ValueError, match="exactly one"):
+        IQAPKLDataset(src=str(tmp_path), fold_file=str(folds))
+    with pytest.raises(ValueError, match="need a fold_file"):
+        IQAPKLDataset(src=str(tmp_path), include_folds=[0])
+
+
+def test_metadata_cache_is_rebuilt_when_files_are_added(tmp_path: Path) -> None:
+    _write_named_pkls(tmp_path, {"a": 2})
+    assert IQAPKLDataset(src=str(tmp_path)).get_metadata("natoms").tolist() == [2]
+    _write_named_pkls(tmp_path, {"b": 5})
+    assert IQAPKLDataset(src=str(tmp_path)).get_metadata("natoms").tolist() == [2, 5]
+
+
+def test_metadata_cache_survives_removed_files(tmp_path: Path) -> None:
+    _write_named_pkls(tmp_path, {"a": 2, "b": 3, "c": 4})
+    IQAPKLDataset(src=str(tmp_path)).get_metadata("natoms")
+    (tmp_path / "b.pkl").unlink()
+    assert IQAPKLDataset(src=str(tmp_path)).get_metadata("natoms").tolist() == [2, 4]

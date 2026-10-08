@@ -1,3 +1,6 @@
+# DEPRECATED (2026-10-09): superseded by iqa_isolated_atom_elem_refs.yaml (recomputed on the
+# cleaned sumformulasplit/train). These older E_IQA_Intra(A) values differ from it by
+# 1-40 eV per element and are not used by any current config.
 # Element references for IQA tasks (indexed by atomic number, index 0 unused)
 # Lists include indices 0..17 (covering H..Cl)
 # Task keys correspond to training task names so they can be applied via --element-refs

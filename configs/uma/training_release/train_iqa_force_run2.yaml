@@ -1,3 +1,6 @@
+# DEPRECATED (2026-10-08): normalizes the raw E_intra (mean -1002, rmsd 2068 eV) against the UMA
+# iso_atom_elem_refs instead of the IQA isolated-atom refs. Superseded by
+# iqa_intra_inter_force_pretrain.yaml.
 defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_components

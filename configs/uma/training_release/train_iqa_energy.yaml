@@ -1,3 +1,5 @@
+# DEPRECATED (2026-10-08): pre-decomposition total-energy run with hard-coded /work paths and the UMA
+# normalizer (rmsd 1.423). Superseded by iqa_intra_inter_{atomchg,nochg}_pretrain.yaml.
 # Minimal FAIRChem v2 training config for IQA PKL energy regression
 # Run: fairchem -c configs/train_iqa_energy_v2.yaml
 

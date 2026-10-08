@@ -1,4 +1,5 @@
 from __future__ import annotations
+import csv
 import logging
 import os
 import random
@@ -135,6 +136,9 @@ class IQAPKLDataset(BaseDataset):
         atomic_charge_key: str | None = None,
         sigma_atomic_charge: float = 0.0,
         lagrangian_cutoff: float | None = None,
+        fold_file: str | None = None,
+        include_folds: list[int] | None = None,
+        exclude_folds: list[int] | None = None,
     ) -> None:
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
@@ -192,6 +196,48 @@ class IQAPKLDataset(BaseDataset):
         self.file_paths.sort()
         if not self.file_paths:
             raise FileNotFoundError(f"No .pkl files found under {self.src}")
+        # All pkls under src, before fold selection; the metadata cache covers them.
+        self._all_file_paths = list(self.file_paths)
+        if fold_file is not None:
+            self.file_paths = self._select_folds(fold_file, include_folds, exclude_folds)
+        elif include_folds is not None or exclude_folds is not None:
+            raise ValueError("include_folds / exclude_folds need a fold_file")
+
+    def _select_folds(
+        self,
+        fold_file: str,
+        include_folds: list[int] | None,
+        exclude_folds: list[int] | None,
+    ) -> list[str]:
+        """Keep the files of the requested folds of a k-fold assignment.
+
+        ``fold_file`` is a CSV with ``file,fold`` columns (scripts/iqa_kfold_assign.py)
+        that must assign every pkl under ``src``, so a stale assignment fails loudly.
+        """
+        if (include_folds is None) == (exclude_folds is None):
+            raise ValueError("Pass exactly one of include_folds / exclude_folds")
+        with open(fold_file) as f:
+            rows = list(csv.DictReader(f))
+        fold_of = {row["file"]: int(row["fold"]) for row in rows}
+        unassigned = [p for p in self.file_paths if os.path.basename(p) not in fold_of]
+        if unassigned:
+            raise ValueError(
+                f"{len(unassigned)} pkls under {self.src} have no fold in {fold_file}, "
+                f"e.g. {os.path.basename(unassigned[0])}; regenerate the assignment"
+            )
+        folds = set(fold_of.values())
+        requested = set(include_folds if include_folds is not None else exclude_folds)
+        if not requested <= folds:
+            raise ValueError(f"Folds {sorted(requested - folds)} not in {fold_file}")
+        keep = (
+            (lambda k: k in requested)
+            if include_folds is not None
+            else (lambda k: k not in requested)
+        )
+        selected = [p for p in self.file_paths if keep(fold_of[os.path.basename(p)])]
+        if not selected:
+            raise ValueError(f"No files left after fold selection from {fold_file}")
+        return selected
 
     def __len__(self) -> int:
         return len(self.file_paths)
@@ -423,62 +469,53 @@ class IQAPKLDataset(BaseDataset):
             )
         return torch.tensor([q_total], dtype=torch.long)
 
+    def _metadata_path(self) -> tuple[str, str]:
+        first_dir = os.path.dirname(self._all_file_paths[0])
+        return first_dir, os.path.join(first_dir, "metadata.npz")
+
+    def _write_metadata_cache(self, first_dir: str, meta_path: str) -> None:
+        natoms = []
+        for p in self._all_file_paths:
+            with open(p, "rb") as f:
+                m = _to_mapping(pickle.load(f))
+            n = int(torch.as_tensor(_require(m, "pos", "pos", "positions", "R")).shape[0])
+            if n == 0:
+                raise ValueError(f"{p} has zero atoms")
+            natoms.append(n)
+        filenames = [os.path.relpath(p, first_dir) for p in self._all_file_paths]
+        np.savez(
+            meta_path,
+            natoms=np.array(natoms, dtype=np.int64),
+            filenames=np.array(filenames),
+        )
+
     @property
-    def metadata(self):
-        # Look for metadata.npz in the data directory
-        if not self.file_paths:
-            raise RuntimeError("No PKL files found for metadata lookup.")
-        first_dir = os.path.dirname(self.file_paths[0])
-        meta_path = os.path.join(first_dir, "metadata.npz")
-        if not os.path.exists(meta_path):
-            natoms = []
-            filenames = []
-            for p in self.file_paths:
-                try:
-                    with open(p, "rb") as f:
-                         s = pickle.load(f)
-                    m = _to_mapping(s)
-                    if hasattr(s, 'natoms'):
-                        n = int(s.natoms)
-                    else:
-                        pos = _require(m, "pos", "pos", "positions", "R")
-                        n = int(torch.as_tensor(pos).shape[0])
-                    if n == 0:
-                        print(f"Warning: file {p} has zero atoms. Check if it's a valid PKL file.")
-                except Exception as e:
-                    print(f"Error loading {p} for metadata: {e}. Setting natoms=0.")
-                    n = 0
-                natoms.append(n)
-                filenames.append(os.path.relpath(p, first_dir))
-            np.savez(meta_path, natoms=np.array(natoms, dtype=np.int64), filenames=np.array(filenames))
-        meta = np.load(meta_path)
-        if ("natoms" not in getattr(meta, "files", [])) or len(meta["natoms"]) == 0:
-            raise RuntimeError(
-                f"metadata.npz at {meta_path} is missing 'natoms' or is empty. Please check your PKL files and rerun."
-            )
-        return meta
+    def metadata(self) -> dict[str, np.ndarray]:
+        """Per-file metadata (``natoms``) aligned with ``self.file_paths``.
+
+        Cached in ``metadata.npz`` next to the pkls and looked up by filename, so the
+        cache stays valid for fold subsets and for directories whose files were
+        removed; it is rebuilt when it lacks any file of this dataset.
+        """
+        first_dir, meta_path = self._metadata_path()
+        names = [os.path.relpath(p, first_dir) for p in self.file_paths]
+        cached: dict[str, int] = {}
+        if os.path.exists(meta_path):
+            meta = np.load(meta_path)
+            cached = dict(zip(meta["filenames"].tolist(), meta["natoms"].tolist()))
+        if any(n not in cached for n in names):
+            self._write_metadata_cache(first_dir, meta_path)
+            meta = np.load(meta_path)
+            cached = dict(zip(meta["filenames"].tolist(), meta["natoms"].tolist()))
+        return {"natoms": np.array([cached[n] for n in names], dtype=np.int64)}
 
     def metadata_hasattr(self, attr: str) -> bool:
-        """Return True if metadata.npz contains `name`. Ensures metadata is created if missing."""
-        if not self.file_paths:
-            return False
-        first_dir = os.path.dirname(self.file_paths[0])
-        meta_path = os.path.join(first_dir, "metadata.npz")
-        if not os.path.exists(meta_path):
-            try:
-                _ = self.metadata
-            except Exception:
-                return False
-        try:
-            meta = np.load(meta_path)
-            return attr in getattr(meta, "files", [])
-        except Exception:
-            return False
+        return attr in self.metadata
 
     def get_metadata(self, attr: str, idx: Optional[Iterable[int]] = None):
         """Return metadata[name] or metadata[name][indices] (numpy array)."""
-        meta = self.metadata  # ensures file exists and validated
-        if attr not in getattr(meta, "files", []):
+        meta = self.metadata
+        if attr not in meta:
             raise KeyError(f"metadata has no key '{attr}'")
         arr = np.array(meta[attr])
         if idx is None:

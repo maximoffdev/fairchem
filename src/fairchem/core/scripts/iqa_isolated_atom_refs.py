@@ -13,7 +13,7 @@ The reference for each element is derived directly from the raw .pkl samples:
 
 The .pkl values are assumed to be in Hartree (atomic units). Results are printed in both
 Hartree and eV, and written to a YAML file under ``configs/uma/training_release/element_refs``
-in the same layout as the existing ``*_elem_refs`` blocks: a flat list indexed by atomic
+with one block per term (``energy``, ``iqa_kinetic``, ...): a flat list indexed by atomic
 number (0..max_num_elements), values in eV, Hartree value in a comment, 0.0 for elements
 not present in the dataset.
 
@@ -85,13 +85,13 @@ def _symbol(z: int) -> str:
 
 
 def _refname(term: str) -> str:
-    """Turn a pkl key into a valid YAML block name ``<name>_elem_refs``."""
+    """Turn a pkl key into the YAML block name the configs read (``element_refs.<name>``)."""
     base = TERM_TO_REFNAME.get(term)
     if base is None:
         base = "".join(c if c.isalnum() else "_" for c in term.lower()).strip("_")
         while "__" in base:
             base = base.replace("__", "_")
-    return f"{base}_elem_refs"
+    return base
 
 
 def _nonclobbering_path(directory: Path, name: str) -> Path:
@@ -210,7 +210,9 @@ def print_report(results: dict, terms: list[str]) -> None:
         print("=" * 68)
         print(f"Term: {term}")
         if entry["kind"] is None:
-            print(f"  No usable data (missing in {entry['missing']}/{entry['n_files']} files).")
+            print(
+                f"  No usable data (missing in {entry['missing']}/{entry['n_files']} files)."
+            )
             print()
             continue
         if entry["missing"]:
@@ -238,7 +240,9 @@ def print_report(results: dict, terms: list[str]) -> None:
                     "  Warning: fit is rank-deficient; per-element references are not "
                     "uniquely determined."
                 )
-            print(f"  {'Z':>3} {'El':>3} {'n_atoms':>10} {'ref [Ha]':>16} {'ref [eV]':>16}")
+            print(
+                f"  {'Z':>3} {'El':>3} {'n_atoms':>10} {'ref [Ha]':>16} {'ref [eV]':>16}"
+            )
             for zi in sorted(entry["refs_ha"]):
                 ha = entry["refs_ha"][zi]
                 print(
@@ -248,8 +252,10 @@ def print_report(results: dict, terms: list[str]) -> None:
         print()
 
 
-def build_yaml(results: dict, terms: list[str], input_dir: str, max_num_elements: int) -> str:
-    """Render the references as a YAML string in the *_elem_refs layout (values in eV)."""
+def build_yaml(
+    results: dict, terms: list[str], input_dir: str, max_num_elements: int
+) -> str:
+    """Render the references as a YAML string, one block per term (values in eV)."""
     lines: list[str] = [
         "# Isolated-atom reference energies computed by iqa_isolated_atom_refs.py",
         f"# Source dataset: {input_dir}",
@@ -261,7 +267,9 @@ def build_yaml(results: dict, terms: list[str], input_dir: str, max_num_elements
         entry = results[term]
         refname = _refname(term)
         if entry["kind"] is None:
-            lines.append(f"# {refname}: term {term!r} had no usable data; block omitted.")
+            lines.append(
+                f"# {refname}: term {term!r} had no usable data; block omitted."
+            )
             lines.append("")
             continue
 
@@ -299,7 +307,9 @@ def build_yaml(results: dict, terms: list[str], input_dir: str, max_num_elements
                     syms = ", ".join(_symbol(k) for k in range(start, end + 1))
                     lines.append(f"# Index {start}-{end}: {syms}  (not in dataset)")
                 else:
-                    lines.append(f"# Index {start}-{end}: remaining elements (not in dataset)")
+                    lines.append(
+                        f"# Index {start}-{end}: remaining elements (not in dataset)"
+                    )
                 lines.extend(["- 0.0"] * (end - start + 1))
         lines.append("")
     return "\n".join(lines) + "\n"
@@ -310,7 +320,10 @@ def main():
         description="Compute isolated-atom reference energies for IQA terms from .pkl data."
     )
     parser.add_argument(
-        "--input_dir", type=str, required=True, help="Directory containing .pkl files (searched recursively)"
+        "--input_dir",
+        type=str,
+        required=True,
+        help="Directory containing .pkl files (searched recursively)",
     )
     parser.add_argument(
         "--terms",

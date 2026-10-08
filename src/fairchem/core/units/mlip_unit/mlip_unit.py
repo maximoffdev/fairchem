@@ -50,7 +50,9 @@ from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.datasets.collaters.mt_collater import MTCollater
 from fairchem.core.modules.edge_matching import EdgeAlignment, build_edge_alignment
 from fairchem.core.modules.normalization.element_references import (  # noqa: TCH001
+    AtomElementReferences,
     ElementReferences,
+    PointChargeEdgeReferences,
 )
 from fairchem.core.modules.normalization.normalizer import Normalizer  # noqa: TCH001
 from fairchem.core.modules.scheduler import CosineLRLambda
@@ -58,7 +60,12 @@ from fairchem.core.units.mlip_unit._metrics import Metrics, get_metrics_fn
 from fairchem.core.units.mlip_unit.api.inference import (
     MLIPInferenceCheckpoint,
 )
-from fairchem.core.units.mlip_unit.utils import load_inference_model
+from fairchem.core.units.mlip_unit.utils import (
+    apply_task_references,
+    load_inference_model,
+    predicted_edge_index,
+    undo_task_references,
+)
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -90,7 +97,9 @@ class Task:
     normalizer: Normalizer
     datasets: list[str]
     loss_fn: torch.nn.Module | None = None
-    element_references: Optional[ElementReferences] = None
+    element_references: Optional[
+        ElementReferences | AtomElementReferences | PointChargeEdgeReferences
+    ] = None
     metrics: list[str] = field(default_factory=list)
     train_on_free_atoms: bool = True
     eval_on_free_atoms: bool = True
@@ -176,10 +185,7 @@ def _predicted_edge_index(
     predictions: dict[str, torch.Tensor], task: Task
 ) -> torch.Tensor | None:
     """The graph an edge head predicted on, if it reported one."""
-    task_predictions = predictions[task.name]
-    if not isinstance(task_predictions, dict):
-        return None
-    return task_predictions.get("edge_index")
+    return predicted_edge_index(predictions[task.name])
 
 
 def get_edge_alignment(
@@ -353,7 +359,7 @@ def compute_loss(
         # apply element references to the target
         if task.element_references is not None:
             with record_function("element_refs"):
-                target = task.element_references.apply_refs(batch, target)
+                target = apply_task_references(task, batch, target, predictions)
         # Normalize the target
         target = task.normalizer.norm(target)
 
@@ -456,12 +462,7 @@ def compute_metrics(
     pred = predictions[task.name][task.property].clone()
     # denormalize the prediction
     pred = task.normalizer.denorm(pred)
-    # undo element references for energy tasks
-    if task.element_references is not None:
-        pred = task.element_references.undo_refs(
-            batch,
-            pred,
-        )
+    pred = undo_task_references(task, batch, pred, predictions)
     pred_masked = pred[output_mask]
 
     # reshape: (num_atoms_in_batch, -1) or (num_systems_in_batch, -1)

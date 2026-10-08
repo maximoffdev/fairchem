@@ -20,7 +20,7 @@ job:
       setup_commands: ${cluster.setup_commands}
   debug: ${cluster.debug}
   run_dir: ${cluster.run_dir}
-  run_name: le-1-1-force_mean_and_rmsd_norm_all_train-with_ref_otf_300neighbors_8A_48h
+  run_name: le-1-1-force_mean_and_rmsd_norm_all_train-with_ref_otf_300neighbors_9A_48h
   logger:
     _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
     _partial_: true
@@ -41,8 +41,8 @@ otf_graph: True
 backbone:
   always_use_pbc: False
 
-max_neighbors: ${cluster.max_neighbors}
-cutoff_radius: ${cluster.cutoff_radius}
+max_neighbors: 300  # never binds: <= 50 neighbours within 9 A in all IQA pkls
+cutoff_radius: 9.0  # A; otf graph and radial basis cutoff of all IQA models
 regress_stress: False
 direct_forces: False
 
@@ -56,18 +56,23 @@ direct_forces: False
 # iqa_vne_edge_coef: 1.0
 # iqa_ven_edge_coef: 1.0
 # iqa_vnn_edge_coef: 1.0
-# Fit with scripts/iqa_compute_normalizers.py over the sumformulasplit/train split
-# (118977 pkl files, HCNOSPClF_combined_datasets_filtered0.001), eV.
+# Fit 2026-10-09 with scripts/iqa_compute_normalizers.py on sumformulasplit/train
+# (118699 pkl files, lagrangian_cutoff 5e-4 as in dataset/iqa_components.yaml), eV,
+# with the element refs recomputed the same day on that split.
+# The previous values were fitted while the 277 broken excluded_vnn_mismatch files
+# were still in train (E_intra residual rmsd 391 eV there), inflating the atom rmsds.
 # intra_a is dereferenced with element_refs.iqa_intra (iqa_isolated_atom_elem_refs.yaml);
 # rerun the script if that element-refs file changes.
-normalizer_mean_iqa_intra_a: -0.00434839
-normalizer_rmsd_iqa_intra_a: 20.0952
-#normalizer_mean_iqa_inter_a: -10.5846
-#normalizer_rmsd_iqa_inter_a: 8.99189
-normalizer_mean_iqa_inter_ab: -0.690637
-normalizer_rmsd_iqa_inter_ab: 2.69112
+normalizer_mean_iqa_intra_a: -0.000502284  # old: -0.246814
+normalizer_rmsd_iqa_intra_a: 5.8638  # old: 5.92343
+#normalizer_mean_iqa_inter_a: -10.5812
+#normalizer_rmsd_iqa_inter_a: 8.99028
+normalizer_mean_iqa_inter_ab: -0.690282  # old: -0.690283
+normalizer_rmsd_iqa_inter_ab: 2.68978  # old: 2.68978
+# Fit 2026-10-09 with scripts/iqa_compute_normalizers.py on sumformulasplit/train (vector: rms of components)
+# Shared by direct and gradient forces (the head divides its gradient forces by it).
 normalizer_mean_iqa_force: 0.0
-normalizer_rmsd_iqa_force: 1.0
+normalizer_rmsd_iqa_force: 8.61726  # eV/A; old: 1.0
 iqa_intra_a_coef: 1.0
 #iqa_inter_a_coef: 0.0  # Set to 0 to skip inter_a loss while keeping model/head active
 iqa_inter_ab_coef: 1.0
@@ -123,6 +128,9 @@ heads:
     edge_energy_mode: ${edge_energy_mode}
     intra_rmsd: ${normalizer_rmsd_iqa_intra_a}
     inter_ab_rmsd: ${normalizer_rmsd_iqa_inter_ab}
+    forces_rmsd: ${normalizer_rmsd_iqa_force}
+    # E_inter(A,B) = E_inter(B,A) exactly: predict it as the mean over both directions.
+    symmetric_edge_prediction: True
 
 runner:
   _target_: fairchem.core.components.train.train_runner.TrainEvalRunner

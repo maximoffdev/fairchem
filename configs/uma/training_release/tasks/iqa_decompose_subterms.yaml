@@ -296,7 +296,7 @@
 #     iqa_combined_head:
 #       prediction_key: node_pred
 #       label_key: iqa_vee_c
-# 
+#
 # - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
 #   name: iqa_vee_x
 #   level: atom
@@ -332,6 +332,10 @@
   level: edge
   property: edge_pred
   datasets: ${dataset_list}
+  # learn the residual to the neutral-atom Coulomb term -Z_A Z_B / 2R
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: -1
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
@@ -353,6 +357,10 @@
   level: edge
   property: edge_pred
   datasets: ${dataset_list}
+  # learn the residual to the neutral-atom Coulomb term +Z_A Z_B / 2R
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: 1
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
@@ -374,15 +382,21 @@
   level: edge
   property: edge_pred
   datasets: ${dataset_list}
+  # learn the residual to the neutral-atom Coulomb term -Z_A Z_B / 2R
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: -1
   loss_fn:
     _target_: fairchem.core.modules.loss.DDPMTLoss
     loss_fn:
       _target_: fairchem.core.modules.loss.MAELoss
     coefficient: ${iqa_ven_ab_coef}
+  # V_en(A,B) = V_ne(B,A) exactly: the head emits the V_ne prediction of the reversed
+  # edge, so this normalizer and the references above must equal V_ne's.
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
-    mean: ${normalizer_mean_iqa_ven_ab}
-    rmsd: ${normalizer_rmsd_iqa_ven_ab}
+    mean: ${normalizer_mean_iqa_vne_ab}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab}
   out_spec:
     dim: [1]
     dtype: float32

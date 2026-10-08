@@ -39,6 +39,7 @@ from fairchem.core.units.mlip_unit.inference.inference_server_ray import (
 from fairchem.core.units.mlip_unit.utils import (
     load_inference_model,
     tf32_context_manager,
+    undo_task_references,
 )
 
 if TYPE_CHECKING:
@@ -299,9 +300,9 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
                 pred_output[task_name] = task.normalizer.denorm(
                     output[task_name][task.property]
                 )
-                if undo_element_references and task.element_references is not None:
-                    pred_output[task_name] = task.element_references.undo_refs(
-                        data_device, pred_output[task_name]
+                if undo_element_references:
+                    pred_output[task_name] = undo_task_references(
+                        task, data_device, pred_output[task_name], output
                     )
 
         return pred_output

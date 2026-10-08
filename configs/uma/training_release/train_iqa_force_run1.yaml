@@ -1,3 +1,5 @@
+# DEPRECATED (2026-10-08): does not compose: element_refs.iqa_intra is missing from
+# iso_atom_elem_refs. Superseded by iqa_intra_inter_force_pretrain.yaml.
 defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_components

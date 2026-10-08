@@ -1,203 +1,301 @@
-#!/usr/bin/env python
-"""Recompute IQA normalizer mean/rmsd values from a pkl dataset.
+"""Fit IQA normalizer mean/rmsd values from a pkl dataset split.
 
-Reproduces the statistics that ``fairchem.core.modules.normalization.normalizer.
-fit_normalizers`` would compute for the active IQA heads, so the results can be
-pasted straight into ``configs/uma/training_release/train_iqa_pretrain.yaml``.
+Samples are loaded through ``IQAPKLDataset`` with the ``key_mapping`` and
+``lagrangian_cutoff`` of a dataset config (default: ``iqa_train`` of
+``configs/uma/training_release/dataset/iqa_components.yaml``), and references are
+subtracted with the same modules the tasks use, so units, Lagrangian masking and
+baselines match training by construction:
 
-For atom-level targets that use element references in
-``configs/uma/training_release/tasks/iqa_decompose.yaml`` (currently
-``iqa_intra_a``), the per-atom reference from the element-refs yaml is
-subtracted from every atom before the mean/rmsd are taken -- exactly what
-``AtomElementReferences.apply_refs`` does during training. Edge-level targets
-(``iqa_inter_ab``) have no element reference, so their per-edge values are used
-directly.
+- atom energies: ``AtomElementReferences`` (isolated-atom refs per element),
+- pair subterms V_ne/V_en/V_ee(A,B): ``NeutralPointChargeEdgeReferences``,
+- E_inter(A,B): additionally ``PredictedChargeEdgeReferences`` evaluated with the AIM
+  q(A) labels (the charges the model's own predictions converge to).
 
-All pkl values are converted Hartree -> eV (matching ``ht2ev: true`` in the
-dataset config), while the element references are already stored in eV. The rmsd
-uses the Bessel (n-1) correction that ``fit_normalizers`` applies whenever the
-mean is non-zero.
+Vector targets (atomic dipoles, forces) are rotation-equivariant, so their normalizer
+mean is 0 and their rmsd is the root mean square over all components.
+
+Every target is reported both raw and referenced. The rmsd uses the Bessel (n-1)
+correction that ``fit_normalizers`` applies whenever the mean is non-zero. Values
+masked to NaN (poorly integrated atoms and their edges) are skipped, like the loss
+does. The largest |values| are listed with their files to expose outliers.
 """
 
 from __future__ import annotations
 
 import argparse
+import heapq
 import math
 import os
-import pickle
-import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-import numpy as np
+import torch
 import yaml
 
-warnings.filterwarnings("ignore")
+from fairchem.core.datasets.iqa_pkl_dataset import IQAPKLDataset
+from fairchem.core.modules.normalization.element_references import (
+    AtomElementReferences,
+    NeutralPointChargeEdgeReferences,
+    PredictedChargeEdgeReferences,
+)
 
-# 1 Hartree = 27.211386245988 eV  (matches iqa_pkl_dataset.Ht_to_eV)
-HT_TO_EV = 27.211386245988
-
-# label name -> (pkl key, elem_refs yaml key or None)
-# Keys mirror `key_mapping` in configs/uma/training_release/dataset/iqa_components.yaml
-# and the element_references blocks in tasks/iqa_decompose.yaml.
-ATOM_TARGETS = {
-    "iqa_intra_a": ("E_IQA_Intra(A)", "iqa_intra"),
-    "iqa_inter_a": ("E_IQA_Inter(A)", None),
-}
-EDGE_TARGETS = {
-    "iqa_inter_ab": "E_IQA_Inter(A,B)/2",
-}
-
-ALL_TARGETS = list(ATOM_TARGETS) + list(EDGE_TARGETS)
-
+CONFIG_DIR = os.path.join(
+    os.path.dirname(__file__), "../../../../configs/uma/training_release"
+)
+DEFAULT_DATASET_CONFIG = os.path.join(CONFIG_DIR, "dataset/iqa_components.yaml")
+DEFAULT_ELEM_REFS = os.path.join(
+    CONFIG_DIR, "element_refs/iqa_isolated_atom_elem_refs.yaml"
+)
 DEFAULT_DATA_DIR = (
     "/media/data/qm_dataset/data/Pipeline/pkl/M062X_Jun-cc-pVDZ_HCNOSPClF/"
     "HCNOSPClF_combined_datasets_filtered0.001/sumformulasplit/train"
 )
-DEFAULT_ELEM_REFS = os.path.join(
-    os.path.dirname(__file__),
-    "../../../../configs/uma/training_release/element_refs/"
-    "iqa_isolated_atom_elem_refs.yaml",
+
+# label -> element-refs yaml key, mirroring the element_references of the tasks
+ATOM_ELEMENT_REFS: dict[str, str] = {
+    "iqa_kinetic": "iqa_kinetic",
+    "iqa_vne": "iqa_vne",
+    "iqa_vee": "iqa_vee",
+    "iqa_intra_a": "iqa_intra",
+}
+# iqa_charge keeps the identity normalizer when its head conserves the total charge
+ATOM_RAW = ["iqa_inter_a", "iqa_charge"]
+VECTOR_LABELS = ["dipole_vector", "iqa_forces_direct"]
+# label -> sign of the neutral point-charge baseline sign * Z_A Z_B / 2R
+EDGE_POINT_CHARGE_SIGNS: dict[str, int] = {
+    "iqa_vne_ab": -1,
+    "iqa_ven_ab": -1,
+    "iqa_vee_ab": 1,
+}
+EDGE_RAW = ["iqa_inter_ab", "iqa_vnn_ab"]
+# edge label -> charge label whose q_A q_B / 2R baseline it is also reported against
+EDGE_CHARGE_REFS: dict[str, str] = {"iqa_inter_ab": "iqa_charge"}
+ALL_LABELS = (
+    list(ATOM_ELEMENT_REFS)
+    + ATOM_RAW
+    + list(EDGE_POINT_CHARGE_SIGNS)
+    + EDGE_RAW
+    + VECTOR_LABELS
 )
+NUM_LARGEST = 5
+
+if TYPE_CHECKING:
+    from fairchem.core.datasets.atomic_data import AtomicData
 
 
-def _load_elem_refs(path: str) -> dict[str, np.ndarray]:
-    with open(path) as f:
-        refs = yaml.safe_load(f)
-    out = {}
-    for _, ref_key in ATOM_TARGETS.values():
-        if ref_key is None:
-            continue
-        if ref_key not in refs:
-            raise KeyError(
-                f"'{ref_key}' not found in element refs file {path}. "
-                f"Available: {sorted(refs)}"
-            )
-        out[ref_key] = np.asarray(refs[ref_key], dtype=np.float64)
-    return out
+@dataclass
+class Moments:
+    count: int = 0
+    total: float = 0.0
+    total_sq: float = 0.0
+    largest: list[tuple[float, str]] = field(default_factory=list)
+
+    def add(self, values: torch.Tensor, path: str) -> None:
+        values = values[torch.isfinite(values)].double()
+        if values.numel() == 0:
+            return
+        self.count += values.numel()
+        self.total += float(values.sum())
+        self.total_sq += float(values.square().sum())
+        self._keep_largest([(float(values.abs().max()), path)])
+
+    def merge(self, other: Moments) -> None:
+        self.count += other.count
+        self.total += other.total
+        self.total_sq += other.total_sq
+        self._keep_largest(other.largest)
+
+    def _keep_largest(self, items: list[tuple[float, str]]) -> None:
+        self.largest = heapq.nlargest(NUM_LARGEST, self.largest + items)
+
+    @property
+    def mean(self) -> float:
+        return self.total / self.count
+
+    @property
+    def rmsd(self) -> float:
+        # Bessel (n-1) correction, matching fit_normalizers when mean != 0
+        var = (self.total_sq - self.count * self.mean**2) / max(self.count - 1, 1)
+        return math.sqrt(max(var, 0.0))
+
+    @property
+    def rms(self) -> float:
+        """Root mean square about zero, the rmsd of a zero-mean normalizer."""
+        return math.sqrt(self.total_sq / self.count)
 
 
-def _accumulate_file(path: str, elem_refs: dict[str, np.ndarray]):
-    """Return per-target (count, sum, sumsq) accumulators for one pkl file."""
-    acc = {t: [0, 0.0, 0.0] for t in ALL_TARGETS}
-    try:
-        with open(path, "rb") as f:
-            d = pickle.load(f)
-        keys = set(d.keys())
-    except Exception:
-        return acc, 1  # failed file
+Accumulators = dict[str, Moments]
+# label -> files that lack it (training would refuse these files)
+MissingLabels = dict[str, list[str]]
 
-    z = None
-    if "atomic_numbers" in keys:
-        z = np.asarray(d["atomic_numbers"]).astype(np.int64).reshape(-1)
-
-    for label, (pkl_key, ref_key) in ATOM_TARGETS.items():
-        if pkl_key not in keys or z is None:
-            continue
-        vals = np.asarray(d[pkl_key], dtype=np.float64).reshape(-1) * HT_TO_EV
-        if vals.shape[0] != z.shape[0]:
-            continue
-        if ref_key is not None:
-            vals = vals - elem_refs[ref_key][z]  # dereference, refs already in eV
-        acc[label][0] += vals.size
-        acc[label][1] += float(vals.sum())
-        acc[label][2] += float(np.square(vals).sum())
-
-    for label, pkl_key in EDGE_TARGETS.items():
-        if pkl_key not in keys:
-            continue
-        vals = np.asarray(d[pkl_key], dtype=np.float64).reshape(-1) * HT_TO_EV
-        if vals.size == 0:
-            continue
-        acc[label][0] += vals.size
-        acc[label][1] += float(vals.sum())
-        acc[label][2] += float(np.square(vals).sum())
-
-    return acc, 0
+_dataset: IQAPKLDataset
+_atom_refs: dict[str, AtomElementReferences]
+_edge_refs: dict[str, NeutralPointChargeEdgeReferences]
+_charge_refs: dict[str, PredictedChargeEdgeReferences]
 
 
-def _worker(paths: list[str], elem_refs: dict[str, np.ndarray]):
-    total = {t: [0, 0.0, 0.0] for t in ALL_TARGETS}
-    failed = 0
-    for p in paths:
-        acc, fail = _accumulate_file(p, elem_refs)
-        failed += fail
-        for t in ALL_TARGETS:
-            total[t][0] += acc[t][0]
-            total[t][1] += acc[t][1]
-            total[t][2] += acc[t][2]
-    return total, failed
+def _init_worker(
+    dataset: IQAPKLDataset,
+    atom_refs: dict[str, AtomElementReferences],
+    edge_refs: dict[str, NeutralPointChargeEdgeReferences],
+    charge_refs: dict[str, PredictedChargeEdgeReferences],
+) -> None:
+    global _dataset, _atom_refs, _edge_refs, _charge_refs
+    _dataset, _atom_refs, _edge_refs, _charge_refs = (
+        dataset,
+        atom_refs,
+        edge_refs,
+        charge_refs,
+    )
 
 
-def _chunks(seq: list[str], n: int):
-    k = math.ceil(len(seq) / n)
-    for i in range(0, len(seq), k):
-        yield seq[i : i + k]
+def _accumulate(indices: list[int]) -> tuple[Accumulators, MissingLabels]:
+    acc: Accumulators = {}
+    missing: MissingLabels = {}
+    for idx in indices:
+        sample: AtomicData = _dataset[idx]
+        path = _dataset.file_paths[idx]
+        # the backbone sets this on the batch before the loss reads the atom refs
+        sample.atomic_numbers_full = sample.atomic_numbers
+        for label in ALL_LABELS:
+            if label not in _dataset.key_mapping:
+                continue
+            if label not in sample:
+                missing.setdefault(label, []).append(path)
+                continue
+            values: torch.Tensor = getattr(sample, label)
+            acc.setdefault(f"{label}:raw", Moments()).add(values, path)
+            if label in _charge_refs:
+                # the AIM labels stand in for the model's predicted charges
+                charges = {
+                    "iqa_charge": {"pred": getattr(sample, EDGE_CHARGE_REFS[label])}
+                }
+                charge_referenced = _charge_refs[label].apply_refs(
+                    sample, values.double(), sample.edge_index, charges
+                )
+                acc.setdefault(f"{label}:charge_referenced", Moments()).add(
+                    charge_referenced, path
+                )
+            if label in _atom_refs:
+                referenced = _atom_refs[label].apply_refs(sample, values.double())
+            elif label in _edge_refs:
+                referenced = _edge_refs[label].apply_refs(
+                    sample, values.double(), sample.edge_index, {}
+                )
+            else:
+                continue
+            acc.setdefault(f"{label}:referenced", Moments()).add(referenced, path)
+    return acc, missing
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
-    ap.add_argument("--elem-refs", default=os.path.abspath(DEFAULT_ELEM_REFS))
+    ap.add_argument("--dataset-config", default=DEFAULT_DATASET_CONFIG)
+    ap.add_argument("--dataset-key", default="iqa_train")
+    ap.add_argument("--elem-refs", default=DEFAULT_ELEM_REFS)
     ap.add_argument("--workers", type=int, default=min(24, os.cpu_count() or 1))
-    ap.add_argument(
-        "--limit", type=int, default=None, help="only use first N files (debug)"
-    )
+    ap.add_argument("--limit", type=int, default=None, help="only use first N files")
     args = ap.parse_args()
 
-    elem_refs = _load_elem_refs(args.elem_refs)
-
-    # walk recursively, matching IQAPKLDataset's file discovery
-    files = sorted(
-        os.path.join(root, fn)
-        for root, _, fnames in os.walk(args.data_dir)
-        for fn in fnames
-        if fn.endswith(".pkl")
+    with open(args.dataset_config) as f:
+        dataset_cfg = yaml.safe_load(f)[args.dataset_key]
+    key_mapping: dict[str, str] = {
+        out_key: in_key
+        for out_key, in_key in dataset_cfg["key_mapping"].items()
+        if out_key in ALL_LABELS
+    }
+    lagrangian_cutoff: float | None = dataset_cfg["lagrangian_cutoff"]
+    dataset = IQAPKLDataset(
+        src=args.data_dir,
+        key_mapping=key_mapping,
+        ht2ev=dataset_cfg["ht2ev"],
+        lagrangian_cutoff=lagrangian_cutoff,
+        # files lacking a label are listed below instead of aborting the fit
+        allow_missing_labels=True,
     )
-    if args.limit:
-        files = files[: args.limit]
-    print(f"Found {len(files)} pkl files in {args.data_dir}")
-    print(f"Element refs from {args.elem_refs}\n")
 
-    total = {t: [0, 0.0, 0.0] for t in ALL_TARGETS}
-    failed = 0
-    n_chunks = max(args.workers * 4, 1)
-    chunks = list(_chunks(files, n_chunks))
-    with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        futs = [ex.submit(_worker, c, elem_refs) for c in chunks]
-        done = 0
-        for fut in as_completed(futs):
-            part, fail = fut.result()
-            failed += fail
-            for t in ALL_TARGETS:
-                total[t][0] += part[t][0]
-                total[t][1] += part[t][1]
-                total[t][2] += part[t][2]
-            done += 1
-            print(f"  chunk {done}/{len(chunks)} done", end="\r", flush=True)
+    with open(args.elem_refs) as f:
+        refs_yaml = yaml.safe_load(f)
+    atom_refs = {
+        label: AtomElementReferences(torch.tensor(refs_yaml[key], dtype=torch.float64))
+        for label, key in ATOM_ELEMENT_REFS.items()
+    }
+    edge_refs = {
+        label: NeutralPointChargeEdgeReferences(sign)
+        for label, sign in EDGE_POINT_CHARGE_SIGNS.items()
+    }
+    missing_charge_labels = set(EDGE_CHARGE_REFS.values()) - set(key_mapping)
+    if missing_charge_labels:
+        raise KeyError(f"key_mapping lacks the charge labels {missing_charge_labels}")
+    charge_refs = {
+        label: PredictedChargeEdgeReferences(charge_task="iqa_charge")
+        for label in EDGE_CHARGE_REFS
+    }
+
+    n_files = len(dataset) if args.limit is None else min(args.limit, len(dataset))
+    print(f"{n_files} pkl files in {args.data_dir}")
+    print(
+        f"dataset config {args.dataset_config} [{args.dataset_key}], "
+        f"lagrangian_cutoff={lagrangian_cutoff}, element refs {args.elem_refs}\n"
+    )
+
+    chunk = max(1, math.ceil(n_files / (args.workers * 8)))
+    chunks = [list(range(i, min(i + chunk, n_files))) for i in range(0, n_files, chunk)]
+    total: Accumulators = {}
+    missing: MissingLabels = {}
+    with ProcessPoolExecutor(
+        max_workers=args.workers,
+        initializer=_init_worker,
+        initargs=(dataset, atom_refs, edge_refs, charge_refs),
+    ) as ex:
+        for done, (part, part_missing) in enumerate(
+            ex.map(_accumulate, chunks), start=1
+        ):
+            for key, moments in part.items():
+                total.setdefault(key, Moments()).merge(moments)
+            for label, paths in part_missing.items():
+                missing.setdefault(label, []).extend(paths)
+            print(f"  chunk {done}/{len(chunks)}", end="\r", flush=True)
     print()
-    if failed:
-        print(f"WARNING: {failed} files could not be read and were skipped.\n")
+    for label, paths in sorted(missing.items()):
+        print(
+            f"WARNING: {len(paths)} file(s) lack '{label}' and would abort training: "
+            + ", ".join(os.path.basename(p) for p in paths[:10])
+        )
 
-    print("=" * 64)
-    print("Config-ready normalizer values (paste into train_iqa_pretrain.yaml):")
-    print("=" * 64)
-    results = {}
-    for t in ALL_TARGETS:
-        n, s, s2 = total[t]
-        if n == 0:
-            print(f"# {t}: NO DATA")
+    print(
+        f"{'target':34s} {'n':>10s} {'mean':>12s} {'rmsd':>12s} {'rms':>12s}"
+        "  largest |x| (file)"
+    )
+    for key in sorted(total):
+        m = total[key]
+        top = ", ".join(f"{v:.1f} ({os.path.basename(p)})" for v, p in m.largest[:3])
+        print(
+            f"{key:34s} {m.count:10d} {m.mean:12.6g} {m.rmsd:12.6g} {m.rms:12.6g}  {top}"
+        )
+
+    print(
+        "\n# Config-ready values (referenced where a reference exists, raw otherwise)"
+    )
+    for label in ALL_LABELS:
+        key = (
+            f"{label}:referenced" if f"{label}:referenced" in total else f"{label}:raw"
+        )
+        if key not in total:
             continue
-        mean = s / n
-        # Bessel (n-1) correction, matching fit_normalizers when mean != 0
-        var = (s2 - n * mean * mean) / max(n - 1, 1)
-        rmsd = math.sqrt(max(var, 0.0))
-        results[t] = (mean, rmsd, n)
-        print(f"normalizer_mean_{t}: {mean:.6g}")
-        print(f"normalizer_rmsd_{t}: {rmsd:.6g}")
-    print("=" * 64)
-    print("\nSummary (label: mean, rmsd, n_samples):")
-    for t, (mean, rmsd, n) in results.items():
-        print(f"  {t:16s} mean={mean:12.5f}  rmsd={rmsd:12.5f}  n={n}")
+        if label in VECTOR_LABELS:
+            print(f"normalizer_mean_{label}: 0.0  # {key}, vector")
+            print(f"normalizer_rmsd_{label}: {total[key].rms:.6g}")
+            continue
+        print(f"normalizer_mean_{label}: {total[key].mean:.6g}  # {key}")
+        print(f"normalizer_rmsd_{label}: {total[key].rmsd:.6g}")
+    print("\n# With PredictedChargeEdgeReferences (charge-referenced edge labels)")
+    for label in EDGE_CHARGE_REFS:
+        key = f"{label}:charge_referenced"
+        print(f"normalizer_mean_{label}: {total[key].mean:.6g}  # {key}")
+        print(f"normalizer_rmsd_{label}: {total[key].rmsd:.6g}")
 
 
 if __name__ == "__main__":

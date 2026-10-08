@@ -13,9 +13,11 @@
   out_spec:
     dim: [1]
     dtype: float32
+  # Identity normalizer: predictions are charges in e, which the head's
+  # conserve_total_charge shift needs. q(A) is O(1) already (train rmsd ~0.58 e).
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    rmsd: 1.0
   metrics:
     - mae

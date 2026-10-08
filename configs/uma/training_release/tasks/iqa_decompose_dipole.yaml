@@ -298,7 +298,7 @@
 #     dim: [3]
 #     dtype: float32
 #     dipole_vector:
-#       prediction_key: dipole_vector    # relates to Key 
+#       prediction_key: dipole_vector    # relates to Key
 #       label_key: dipole_vector            # relates to Key in iqa_components (|Mu(A)|)
 
 # - _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
@@ -342,7 +342,7 @@
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    rmsd: ${normalizer_rmsd_dipole_vector}
   metrics:
     - mae
     - cosine_similarity
@@ -362,9 +362,11 @@
   out_spec:
     dim: [1]
     dtype: float32
+  # Identity normalizer: predictions are charges in e, which the head's
+  # conserve_total_charge shift needs (see tasks/iqa_atomic_charge.yaml).
   normalizer:
     _target_: fairchem.core.modules.normalization.normalizer.Normalizer
     mean: 0.0
-    rmsd: ${normalizer_rmsd}
+    rmsd: 1.0
   metrics:
     - mae

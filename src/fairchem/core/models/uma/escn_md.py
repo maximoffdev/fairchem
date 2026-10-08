@@ -55,6 +55,8 @@ from fairchem.core.models.uma.nn.activation import (
     SmoothLeakyReLU,
 )
 from fairchem.core.models.utils.irreps import cg_change_mat, irreps_sum
+from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
+from fairchem.core.modules.iqa_coulomb import point_charge_pair_energy
 
 from .escn_md_block import eSCNMD_Block
 
@@ -1093,13 +1095,41 @@ class IQA_Edge_Head(nn.Module, HeadInterface):
         
         return {"pred": e}
 
+def _shift_to_total_charge(q: torch.Tensor, data: AtomicData) -> torch.Tensor:
+    """Shift per-atom charges uniformly within each molecule to sum to data.charge."""
+    if gp_utils.initialized():
+        raise NotImplementedError("Total charge conservation under graph parallel.")
+    batch = data["batch"]
+    num_graphs = data["natoms"].shape[0]
+    deficit = data["charge"].to(q.dtype) - torch.zeros(
+        num_graphs, device=q.device, dtype=q.dtype
+    ).index_add(0, batch, q)
+    return q + (deficit / data["natoms"].to(q.dtype))[batch]
+
+
 class IQA_Node_Head2(nn.Module, HeadInterface):
     """
     Advanced per-atom head: predict per-atom properties using L=0 features 
     AND norms of L>0 features. Includes Dropout, LayerNorm, and Residual connections.
+
+    ``conserve_total_charge``: for atomic charges q(A), shift each molecule's
+    predictions uniformly so they sum to its total charge ``data.charge``. The shift
+    is applied to the head output, so the task's normalizer must be the identity
+    (predictions in e) and the task must not use element references.
+
+    ``task_name``: return ``{task_name: {"pred": ...}}`` instead of ``{"pred": ...}``,
+    for models with ``pass_through_head_outputs`` whose other heads are task-keyed.
     """
-    def __init__(self, backbone: eSCNMDBackbone, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        dropout: float = 0.1,
+        conserve_total_charge: bool = False,
+        task_name: str | None = None,
+    ) -> None:
         super().__init__()
+        self.conserve_total_charge = conserve_total_charge
+        self.task_name = task_name
         self.sphere_channels = backbone.sphere_channels
         self.hidden_channels = backbone.hidden_channels
         self.lmax = backbone.lmax
@@ -1151,14 +1181,19 @@ class IQA_Node_Head2(nn.Module, HeadInterface):
         # 3. Concatenate all invariants
         x = torch.cat(features, dim=-1) # (N, C * (Lmax+1))
         
-        # 4. MLP with Residuals
-        x = self.proj(x)
-        x = x + self.res1(x)
-        pred = self.final(x).squeeze(-1)
+        # 4. MLP with Residuals, in fp32 (see _project_fp32)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            x = self.proj(x.float())
+            x = x + self.res1(x)
+            pred = self.final(x).squeeze(-1)
+            if self.conserve_total_charge:
+                pred = _shift_to_total_charge(pred, data)
 
         if gp_utils.initialized():
             pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
 
+        if self.task_name is not None:
+            return {self.task_name: {"pred": pred}}
         return {"pred": pred}
 
 class IQA_Edge_Head2(nn.Module, HeadInterface):
@@ -1249,6 +1284,29 @@ def _predicted_edge_index(emb: dict[str, torch.Tensor]) -> torch.Tensor:
     return emb.get("edge_index_full", emb["edge_index"])
 
 
+def _project_fp32(x: torch.Tensor, *layers: nn.Module) -> torch.Tensor:
+    """Apply the output projections in fp32, outside bf16 autocast.
+
+    bf16 keeps ~3 significant digits: rounding a normalized output of O(1) costs
+    ~0.4% of the normalizer rmsd (~1.4 kcal/mol per IQA pair subterm edge), a floor
+    no amount of training removes.
+    """
+    with torch.autocast(device_type=x.device.type, enabled=False):
+        x = x.float()
+        for layer in layers:
+            x = layer(x)
+    return x
+
+
+def _scatter_to_nodes_fp32(
+    x_message: torch.Tensor, edge_index: torch.Tensor, num_nodes: int
+) -> torch.Tensor:
+    """Sum incoming edge messages per target node, accumulated in fp32."""
+    return torch_geometric.utils.scatter(
+        x_message.float(), edge_index[1], dim=0, dim_size=num_nodes, reduce="sum"
+    )
+
+
 class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
     """SO(2)-equivariant graph attention head for joint node/edge prediction.
 
@@ -1296,8 +1354,32 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         edge_task_name: str = "iqa_inter_ab",
         node_task_name: str = "iqa_intra_a",
         extra_node_task_name: str | None = None,
+        symmetric_edge_prediction: bool = False,
+        reversed_edge_task_name: str | None = None,
     ) -> None:
+        """
+        Args (IQA additions):
+            symmetric_edge_prediction: predict X(A,B) = X(B,A) exactly, as the mean of
+                the projections of both directions' messages (all IQA pair energies
+                but V_ne/V_en are symmetric).
+            reversed_edge_task_name: additionally emit this task as the edge
+                prediction of the *reversed* edge, Y(A,B) = X(B,A) -- e.g. V_en from
+                the V_ne head. Its normalizer and references must equal this head's.
+        """
         super().__init__()
+        if symmetric_edge_prediction and reversed_edge_task_name is not None:
+            raise ValueError(
+                "A symmetric edge prediction is its own reverse; "
+                "reversed_edge_task_name must be None with symmetric_edge_prediction."
+            )
+        if (
+            symmetric_edge_prediction or reversed_edge_task_name
+        ) and not edge_prediction:
+            raise ValueError(
+                "symmetric_edge_prediction / reversed_edge_task_name need edge_prediction."
+            )
+        self.symmetric_edge_prediction = symmetric_edge_prediction
+        self.reversed_edge_task_name = reversed_edge_task_name
 
         # === EBDM-origin: Parameter initialization ===
         self.backbone = backbone
@@ -1692,6 +1774,49 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         x_message = torch.bmm(wigner_inv, x_message)
         return x_message
 
+    def reversed_edge_messages(
+        self,
+        data: AtomicData,
+        emb: dict[str, torch.Tensor],
+        x_message: torch.Tensor,
+    ) -> torch.Tensor:
+        """Trunk messages of each edge's reverse B->A, row-aligned with the A->B edges.
+
+        Edges whose reverse is in the graph reuse its message, so both directions of
+        a pair see identical features. A radius graph truncated by ``max_neighbors``
+        can lack some reverses; then the trunk runs once more on the flipped graph
+        and those edges take the flipped messages.
+        """
+        if gp_utils.initialized():
+            raise NotImplementedError(
+                "Reversed edge messages are not implemented under graph parallel."
+            )
+        edge_index = emb["edge_index"]
+        reverse = match_edges_by_node_pairs(
+            edge_index.flip(0), edge_index, emb["node_embedding"].shape[0]
+        )
+        has_reverse = reverse >= 0
+        x_reverse = x_message[reverse.clamp(min=0)]
+        if bool(has_reverse.all()):
+            return x_reverse
+        flipped = {
+            **emb,
+            "edge_index": edge_index.flip(0),
+            "edge_distance_vec": -emb["edge_distance_vec"],
+        }
+        x_flipped = self.compute_edge_messages(data, flipped)
+        return torch.where(has_reverse.view(-1, 1, 1), x_reverse, x_flipped)
+
+    def finalize_output(self, out_embedding: torch.Tensor) -> torch.Tensor:
+        """Narrow to the requested output degree, squeeze, and gather under GP."""
+        out_embedding = out_embedding.narrow(
+            1, self.num_irreps_passed, 2 * self.out_degree + 1
+        )
+        pred = self._squeeze_scalar_output(out_embedding)
+        if gp_utils.initialized():
+            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
+        return pred
+
     def forward(self, data, emb):
         """Forward pass for SO(2)-equivariant graph attention.
 
@@ -1720,13 +1845,21 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
 
         # === EBDM-origin: Edge prediction (if enabled) ===
         if self.edge_prediction and self.output_channels_edges > 0:
-            out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
-            out_embedding_edges = out_embedding_edges.narrow(
-                1, self.num_irreps_passed, 2 * self.out_degree + 1
+            edge_pred = self.finalize_output(
+                _project_fp32(x_message, self.proj_edges_1, self.proj_edges_2)
             )
-            edge_pred = self._squeeze_scalar_output(out_embedding_edges)
-            if gp_utils.initialized():
-                edge_pred = gp_utils.gather_from_model_parallel_region(edge_pred, dim=0)
+            if self.symmetric_edge_prediction or self.reversed_edge_task_name:
+                x_reverse = self.reversed_edge_messages(data, emb, x_message)
+                reverse_pred = self.finalize_output(
+                    _project_fp32(x_reverse, self.proj_edges_1, self.proj_edges_2)
+                )
+                if self.symmetric_edge_prediction:
+                    edge_pred = 0.5 * (edge_pred + reverse_pred)
+                else:
+                    output[self.reversed_edge_task_name] = {
+                        "edge_pred": reverse_pred,
+                        "edge_index": _predicted_edge_index(emb),
+                    }
             # FAIRCHEM ADAPTATION: Nested dict with edge_task_name key.
             # edge_index rides along so the loss can match the labels to the graph
             # the prediction was made on (see _predicted_edge_index).
@@ -1741,18 +1874,12 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # FAIRCHEM ADAPTATION: Use torch_geometric.utils.scatter instead of
         # SO3_Embedding._reduce_edge() method. Scatter sums edge messages [E, F]
         # by target node index [E] to produce node messages [N, F].
-        x_nodes = torch_geometric.utils.scatter(
-            x_message,
-            edge_index[1],
-            dim=0,
-            dim_size=num_nodes,
-            reduce="sum",
-        )
+        x_nodes = _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
 
         # === EBDM-origin: Node prediction (if enabled) ===
         if self.node_prediction and self.output_channels_nodes > 0:
-            proj_nodes = self.proj_nodes_1(x_nodes)
-            out_embedding_nodes = self.proj_nodes_2(proj_nodes)
+            proj_nodes = _project_fp32(x_nodes, self.proj_nodes_1)
+            out_embedding_nodes = _project_fp32(proj_nodes, self.proj_nodes_2)
             out_embedding_nodes = out_embedding_nodes.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
             )
@@ -1762,7 +1889,9 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             # FAIRCHEM ADAPTATION: Nested dict with node_task_name key
             output[self.node_task_name] = {"node_pred": node_pred}
             if self.proj_nodes_2_extra is not None:
-                out_embedding_nodes_extra = self.proj_nodes_2_extra(proj_nodes)
+                out_embedding_nodes_extra = _project_fp32(
+                    proj_nodes, self.proj_nodes_2_extra
+                )
                 out_embedding_nodes_extra = out_embedding_nodes_extra.narrow(
                     1, self.num_irreps_passed, 2 * self.out_degree + 1
                 )
@@ -2093,6 +2222,12 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
             task-specific capacity, ``False`` shares it and leaves only the final
             ``SO3_Linear -> output_channels`` per task.
         output_channels: output channels of the final projection (1 for scalars).
+        symmetric_edge_task_names: edge tasks with X(A,B) = X(B,A), predicted as the
+            mean over both directions so the symmetry holds exactly.
+        reversed_edge_tasks: ``{derived: source}`` edge tasks emitted as the source
+            task's prediction on the reversed edge, derived(A,B) = source(B,A) --
+            V_en(A,B) = V_ne(B,A). The derived task gets no projection of its own;
+            its normalizer and references must equal the source's.
 
     Node and edge tasks share the *same* trunk here. To give each group its own
     trunk, declare two of these heads instead (one with only ``node_task_names``,
@@ -2107,12 +2242,22 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
         share_trunk: bool = True,
         per_task_proj_1: bool = True,
         output_channels: int = 1,
+        symmetric_edge_task_names: list[str] | None = None,
+        reversed_edge_tasks: dict[str, str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
 
         self.node_task_names = [str(name) for name in (node_task_names or [])]
         self.edge_task_names = [str(name) for name in (edge_task_names or [])]
+        self.symmetric_edge_task_names = [
+            str(name) for name in (symmetric_edge_task_names or [])
+        ]
+        self.reversed_edge_tasks = {
+            str(derived): str(source)
+            for derived, source in (reversed_edge_tasks or {}).items()
+        }
+        self._validate_edge_symmetries()
         if not self.node_task_names and not self.edge_task_names:
             raise ValueError(
                 "IQA_MultiTaskSO2Head needs at least one of node_task_names / "
@@ -2132,6 +2277,9 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
             # Independent head per task: identical parameterization to declaring one
             # SO2EquivariantGraphAttentionNodeEdgePrediction per task in the config.
             self.task_heads = nn.ModuleDict()
+            derived_of = {
+                source: derived for derived, source in self.reversed_edge_tasks.items()
+            }
             for task in self.edge_task_names:
                 self.task_heads[task] = SO2EquivariantGraphAttentionNodeEdgePrediction(
                     backbone,
@@ -2139,6 +2287,8 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
                     node_prediction=False,
                     edge_task_name=task,
                     output_channels_edges=self.output_channels,
+                    symmetric_edge_prediction=task in self.symmetric_edge_task_names,
+                    reversed_edge_task_name=derived_of.get(task),
                     **kwargs,
                 )
             for task in self.node_task_names:
@@ -2197,15 +2347,34 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
             for task in self.node_task_names:
                 self.node_proj_2[task] = make_proj_2()
 
-    def _finalize(self, out_embedding: torch.Tensor) -> torch.Tensor:
-        """Narrow to the requested output degree, squeeze, and gather under GP."""
-        out_embedding = out_embedding.narrow(
-            1, self.trunk.num_irreps_passed, 2 * self.trunk.out_degree + 1
+    def _validate_edge_symmetries(self) -> None:
+        edge_tasks = set(self.edge_task_names)
+        unknown = set(self.symmetric_edge_task_names) - edge_tasks
+        if unknown:
+            raise ValueError(
+                f"symmetric_edge_task_names {sorted(unknown)} are not in edge_task_names"
+            )
+        for derived, source in self.reversed_edge_tasks.items():
+            if source not in edge_tasks:
+                raise ValueError(
+                    f"reversed_edge_tasks source '{source}' is not in edge_task_names"
+                )
+            if source in self.symmetric_edge_task_names:
+                raise ValueError(
+                    f"'{source}' is symmetric, so its reverse '{derived}' is itself"
+                )
+            if derived in edge_tasks or derived in self.node_task_names:
+                raise ValueError(
+                    f"reversed task '{derived}' must not also be predicted directly"
+                )
+
+    def _edge_proj(self, task: str, x: torch.Tensor) -> torch.Tensor:
+        proj_1 = (
+            self.edge_proj_1_tasks[task] if self.per_task_proj_1 else self.edge_proj_1
         )
-        pred = self.trunk._squeeze_scalar_output(out_embedding)
-        if gp_utils.initialized():
-            pred = gp_utils.gather_from_model_parallel_region(pred, dim=0)
-        return pred
+        return self.trunk.finalize_output(
+            _project_fp32(x, proj_1, self.edge_proj_2[task])
+        )
 
     def forward(
         self, data: AtomicData, emb: dict[str, torch.Tensor]
@@ -2220,35 +2389,38 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
         num_nodes = emb["node_embedding"].shape[0]
         x_message = self.trunk.compute_edge_messages(data, emb)
 
+        x_reverse = (
+            self.trunk.reversed_edge_messages(data, emb, x_message)
+            if self.symmetric_edge_task_names or self.reversed_edge_tasks
+            else None
+        )
         outputs = {}
         for task in self.edge_task_names:
-            proj_1 = (
-                self.edge_proj_1_tasks[task]
-                if self.per_task_proj_1
-                else self.edge_proj_1
-            )
-            edge_pred = self._finalize(self.edge_proj_2[task](proj_1(x_message)))
+            edge_pred = self._edge_proj(task, x_message)
+            if task in self.symmetric_edge_task_names:
+                edge_pred = 0.5 * (edge_pred + self._edge_proj(task, x_reverse))
             outputs[task] = {
                 "edge_pred": edge_pred,
+                "edge_index": _predicted_edge_index(emb),
+            }
+        for derived, source in self.reversed_edge_tasks.items():
+            outputs[derived] = {
+                "edge_pred": self._edge_proj(source, x_reverse),
                 "edge_index": _predicted_edge_index(emb),
             }
 
         if self.node_task_names:
             # Same neighbor aggregation the single-task head does, but only once.
-            x_nodes = torch_geometric.utils.scatter(
-                x_message,
-                edge_index[1],
-                dim=0,
-                dim_size=num_nodes,
-                reduce="sum",
-            )
+            x_nodes = _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
             for task in self.node_task_names:
                 proj_1 = (
                     self.node_proj_1_tasks[task]
                     if self.per_task_proj_1
                     else self.node_proj_1
                 )
-                node_pred = self._finalize(self.node_proj_2[task](proj_1(x_nodes)))
+                node_pred = self.trunk.finalize_output(
+                    _project_fp32(x_nodes, proj_1, self.node_proj_2[task])
+                )
                 outputs[task] = {"node_pred": node_pred}
 
         return outputs
@@ -2274,10 +2446,6 @@ class IQA_Vnn_Analytic_Head(nn.Module, HeadInterface):
     (mean=0, rmsd=1) so that ``predict()``'s denormalization leaves the physical
     value untouched, and set its loss coefficient to 0 (there is nothing to learn).
     """
-
-    # Must match the unit conventions used by IQAPKLDataset.
-    ANG_TO_BOHR: float = 1.8897261245650618  # 1 Angstrom in Bohr
-    HARTREE_TO_EV: float = 27.211386245988  # 1 Hartree in eV
 
     def __init__(
         self,
@@ -2311,16 +2479,15 @@ class IQA_Vnn_Analytic_Head(nn.Module, HeadInterface):
         # (edge_distance_vec = pos[src] - pos[dst]) so forces stay exact, and compute
         # in float32 for an accurate Coulomb term even when the backbone runs in bf16.
         r_ang = torch.linalg.norm(edge_distance_vec.float(), dim=-1)  # (E,)
-        r_bohr = r_ang * self.ANG_TO_BOHR
-
-        z = data["atomic_numbers"].to(r_bohr.dtype)
-        z_src = z[edge_index[0]]
-        z_dst = z[edge_index[1]]
-
-        # V_nn(A, B) / 2 per directed edge, in Hartree.
-        vnn = self.pair_scale * z_src * z_dst / r_bohr
-        if self.output_in_ev:
-            vnn = vnn * self.HARTREE_TO_EV
+        z = data["atomic_numbers"]
+        # V_nn(A, B) / 2 per directed edge.
+        vnn = point_charge_pair_energy(
+            z[edge_index[0]],
+            z[edge_index[1]],
+            r_ang,
+            self.pair_scale,
+            self.output_in_ev,
+        )
 
         # Match the gather behavior of the learned edge heads under graph parallel.
         if gp_utils.initialized():
@@ -2340,7 +2507,12 @@ class IQA_Edge_Head_Equiformer(SO2EquivariantGraphAttentionNodeEdgePrediction):
 
 
 class IQA_Components_EFS_Head(nn.Module, HeadInterface):
-    """Predict IQA components and forces from component-summed energy."""
+    """Predict IQA components and forces from component-summed energy.
+
+    The energy is rebuilt from the normalized component predictions times their
+    rmsds, so its gradient is a physical force; it is emitted divided by
+    ``forces_rmsd`` to match the direct forces and the shared force normalizer.
+    """
 
     def __init__(
         self,
@@ -2355,8 +2527,11 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
         intra_rmsd: float = 1.0,
         inter_a_rmsd: float = 1.0,
         inter_ab_rmsd: float = 1.0,
+        forces_rmsd: float = 1.0,
+        symmetric_edge_prediction: bool = False,
     ) -> None:
         super().__init__()
+        self.forces_rmsd = forces_rmsd
         self.regress_forces = backbone.regress_forces
         self.direct_forces = backbone.direct_forces
         self.node_task_name = node_task_name
@@ -2377,6 +2552,7 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
             edge_task_name=edge_task_name,
             node_task_name=node_task_name,
             extra_node_task_name=inter_task_name if include_inter_a else None,
+            symmetric_edge_prediction=symmetric_edge_prediction,
         )
         self.force_head = Linear_Force_Head(backbone)
 
@@ -2475,7 +2651,7 @@ class IQA_Components_EFS_Head(nn.Module, HeadInterface):
 
         forces_direct = self.force_head(data, emb)["forces"]
         outputs[self.forces_direct_task_name] = {"forces": forces_direct}
-        outputs[self.forces_grad_task_name] = {"forces": forces_grad}
+        outputs[self.forces_grad_task_name] = {"forces": forces_grad / self.forces_rmsd}
 
         return outputs
 
@@ -2486,7 +2662,7 @@ class Linear_Force_Head(nn.Module, HeadInterface):
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
 
     def forward(self, data_dict: AtomicData, emb: dict[str, torch.Tensor]):
-        forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
+        forces = _project_fp32(emb["node_embedding"].narrow(1, 0, 4), self.linear)
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
         if gp_utils.initialized():
@@ -2638,7 +2814,7 @@ class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
     ) -> dict[str, torch.Tensor]:
         # Extrahiere L=0 und L=1 (Indizes 0 bis 3)
         node_features = emb["node_embedding"].narrow(1, 0, 4)
-        res = self.linear(node_features)
+        res = _project_fp32(node_features, self.linear)
         
         # Extrahiere den L=1 Anteil (Vektor) -> Indizes 1,2,3
         vector = res.narrow(1, 1, 3).view(-1, 3).contiguous()
