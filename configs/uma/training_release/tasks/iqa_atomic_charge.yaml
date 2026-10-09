@@ -1,0 +1,23 @@
+# Atomic charge q(A), in electrons (dimensionless, not unit-converted by
+# IQAPKLDataset).
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_charge
+  level: atom
+  property: pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_charge_coef}
+  out_spec:
+    dim: [1]
+    dtype: float32
+  # Identity normalizer: predictions are charges in e, which the head's
+  # conserve_total_charge shift needs. q(A) is O(1) already (train rmsd ~0.58 e).
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: 1.0
+  metrics:
+    - mae

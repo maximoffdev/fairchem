@@ -1,0 +1,246 @@
+defaults:
+  - cluster: leipzig_cluster
+  - dataset: iqa_components
+  - tasks: iqa_decompose_subterms
+  - backbone: K4L2
+  - element_refs: iqa_isolated_atom_elem_refs
+  - _self_
+
+
+job:
+  device_type: ${cluster.device}
+  scheduler:
+    mode: ${cluster.mode}
+    ranks_per_node: ${cluster.ranks_per_node}
+    num_nodes: 1
+    slurm:
+      partition: ${cluster.partition}
+      mem_gb: ${cluster.mem_gb}
+      cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
+      setup_commands: ${cluster.setup_commands}
+  debug: ${cluster.debug}
+  run_dir: ${cluster.run_dir}
+  run_name: le-subterms_sharedtrunk_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_9A_40h
+  logger:
+    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    _partial_: true
+    entity: lamerslab
+    project: iqa
+
+# --- Runtime Hyperparameters ---
+epochs: 300
+bf16: True
+
+# --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
+moe_layer_type: pytorch
+num_moe_experts: ${cluster.num_moe_experts}
+# False: train on the dataset's complete edge graph (labels line up row-for-row).
+# True: the backbone builds a radius graph (cutoff_radius/max_neighbors) instead and
+# the edge labels are re-indexed onto it for the loss, dropping pairs outside the
+# cutoff -- see fairchem.core.modules.edge_matching.
+
+# dataset     systems    atoms | avg@5A max@5A | avg@6A max@6A | avg@7A max@7A | avg@8A max@8A
+# test set      11740   172689 |  5.543     17 |  7.495     22 |  9.400     27 | 11.058     31
+# 1UAO              1      138 |  7.797     13 | 11.638     21 | 16.261     28 | 22.058     39
+
+otf_graph: True
+# IQA systems are isolated molecules with a zero cell -- build the radius graph
+# aperiodically (the pbc path divides by a zero cell volume and yields NaN reps).
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  always_use_pbc: False
+  # Per-atom charge embedding (pos_emb), fed by dataset.*.atomic_charge_key.
+  charge_conditioning: atomic
+  regress_forces: False
+
+max_neighbors: 300  # never binds: <= 50 neighbours within 9 A in all IQA pkls
+cutoff_radius: 9.0  # A; otf graph and radial basis cutoff of all IQA models
+regress_stress: False
+direct_forces: False
+
+# iqa_kinetic_coef: 0.2
+# iqa_vne_coef: 0.2
+# iqa_vee_coef: 0.2
+# iqa_vee_c_coef: 0.2
+# iqa_vee_x_coef: 0.2
+# iqa_inter_coef: 1.0
+# # Edge-level coefficients
+# iqa_inter_edge_coef: 1.0
+# iqa_vee_edge_coef: 1.0
+# iqa_vne_edge_coef: 1.0
+# iqa_ven_edge_coef: 1.0
+# iqa_vnn_edge_coef: 1.0
+# Fit 2026-10-09 with scripts/iqa_compute_normalizers.py on sumformulasplit/train
+# (118699 pkl files, lagrangian_cutoff 5e-4 as in dataset/iqa_components.yaml), eV,
+# with the element refs recomputed the same day on that split.
+# The previous values were fitted while the 277 broken excluded_vnn_mismatch files
+# were still in train (E_intra residual rmsd 391 eV there), inflating the atom rmsds.
+# Atom-level subterm normalizers: residual after isolated-atom element refs.
+normalizer_mean_iqa_kinetic: 0.000299868  # old: 0.235344
+normalizer_rmsd_iqa_kinetic: 6.31632  # old: 6.37189
+normalizer_mean_iqa_vne: -0.00283579  # old: -0.565679
+normalizer_rmsd_iqa_vne: 47.3809  # old: 47.4302
+normalizer_mean_iqa_vee: 0.00203353  # old: 0.0835214
+normalizer_rmsd_iqa_vee: 37.4725  # old: 37.4766
+# normalizer_mean_iqa_vee_c: 493.686
+# normalizer_rmsd_iqa_vee_c: 909.29
+# normalizer_mean_iqa_vee_x: -100.909
+# normalizer_rmsd_iqa_vee_x: 140.044
+iqa_kinetic_coef: 1.0
+iqa_vne_coef: 1.0
+iqa_vee_coef: 1.0
+# iqa_vee_c_coef: 1.0
+# iqa_vee_x_coef: 1.0
+#iqa_inter_a_coef: 0.0
+# Edge-level subterm normalizers (halved for directed graph, 26.3M directed edges):
+# residual after the neutral point-charge references of tasks/iqa_decompose_subterms
+# (raw values for comparison: vne/ven mean -41.86 rmsd 74.49, vee mean 40.33 rmsd 72.89).
+normalizer_mean_iqa_vne_ab: 0.835517  # old: 0.835521
+normalizer_rmsd_iqa_vne_ab: 11.6948  # old: 11.6949
+normalizer_mean_iqa_vee_ab: -2.36131  # old: -2.36132
+normalizer_rmsd_iqa_vee_ab: 13.2892  # old: 13.2892
+# iqa_ven_ab uses the iqa_vne_ab normalizer (V_en(A,B) = V_ne(B,A)).
+# V_nn is deterministic (IQA_Vnn_Analytic_Head outputs the physical value directly),
+# so use an identity normalizer: denorm(x) = x*1 + 0 leaves the value untouched.
+normalizer_mean_iqa_vnn_ab: 0.0  # analytic head; was 42.738 when learned
+normalizer_rmsd_iqa_vnn_ab: 1.0  # analytic head; was 74.1815 when learned
+# Edge-level subterm coefficients
+iqa_vne_ab_coef: 1.0
+iqa_vee_ab_coef: 1.0
+iqa_ven_ab_coef: 1.0
+# V_nn is deterministic (analytic head) -> nothing to learn, keep it out of the loss.
+iqa_vnn_ab_coef: 0.0
+
+# --- Dataset Setup ---
+dataset_list: ["iqa_pkl"]
+exclude_keys: ["source", "sid"]
+
+# Merged over the dataset config group. Condition on the per-atom charges q(A)
+# instead of the total charge (charge_key and atomic_charge_key are exclusive).
+# At inference q(A) comes from the iqa_charge_pretrain model.
+dataset:
+  iqa_train:
+    charge_key: null
+    atomic_charge_key: q(A)
+    # Std (e) of Gaussian noise on the q(A) input, for robustness to predicted charges.
+    # ~2x the charge model's val RMSE (0.0087 e); larger noise only discards q information
+    sigma_atomic_charge: 0.02
+    lagrangian_cutoff: 5.0e-4
+  iqa_val:
+    charge_key: null
+    atomic_charge_key: q(A)
+
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_train}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: True
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_val}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: False
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+# --- Head architecture ---
+# True:  all six learned subterm tasks (3 intra-atomic node terms + 3 pair edge
+#        terms) share ONE SO(2) attention trunk; only the small output stacks are
+#        task specific. ~1.6M head params for K4L2.
+# False: one fully independent trunk per task -- the previous layout, identical
+#        parameterization to declaring six separate heads. ~8.5M head params.
+# The three pair terms V_ne(A,B), V_ee(A,B), V_en(A,B) and the intra terms are all
+# functionals of the same density, so the shared trunk is a physical prior rather
+# than a compromise, and it gets 6x the gradient signal.
+share_head_trunk: True
+# With a shared trunk: keep the first (wide -> hidden) output projection per task
+# for a little task-specific capacity. False shares it too, leaving only the final
+# SO3_Linear -> 1 per task. Ignored when share_head_trunk is False.
+per_task_proj_1: True
+
+heads:
+  # One trunk, six task-specific output stacks (or six independent trunks when
+  # share_head_trunk is False).
+  iqa_subterms_head:
+    module: fairchem.core.models.uma.escn_md.IQA_MultiTaskSO2Head
+    share_trunk: ${share_head_trunk}
+    per_task_proj_1: ${per_task_proj_1}
+    # Intra-atomic subterms, predicted per atom.
+    node_task_names: [iqa_kinetic, iqa_vne, iqa_vee]
+    # Pairwise inter subterms, predicted per directed edge.
+    edge_task_names: [iqa_vne_ab, iqa_vee_ab]
+    # Exact symmetries of the labels (verified on all pkls): V_ee(A,B) = V_ee(B,A),
+    # and V_en(A,B) = V_ne(B,A), so V_en is the V_ne head read on the reversed edge.
+    symmetric_edge_task_names: [iqa_vee_ab]
+    reversed_edge_tasks:
+      iqa_ven_ab: iqa_vne_ab
+  # V_nn is computed deterministically (Coulomb's law) rather than predicted.
+  iqa_vnn_ab_head:
+    module: fairchem.core.models.uma.escn_md.IQA_Vnn_Analytic_Head
+    node_prediction: false
+    edge_prediction: true
+    edge_task_name: iqa_vnn_ab
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${tasks}
+    model:
+      _target_: fairchem.core.models.base.HydraModel
+      backbone: ${backbone}
+      pass_through_head_outputs: true
+      # _target_: fairchem.core.units.mlip_unit.mlip_unit.initialize_finetuning_model
+      # checkpoint_location: /home/sc.uni-leipzig.de/rh41uvuh/.cache/huggingface/hub/models--facebook--UMA/snapshots/be2896459a03fcde05e20d2fcefd11f450601fce/checkpoints/uma-s-1p2.pt
+      # overrides:
+      #   freeze_backbone: true
+      #   pass_through_head_outputs: false
+      heads: ${heads}
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: 8e-4
+      weight_decay: 1e-3
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
+      lr_min_factor: 0.01
+      epochs: ${epochs}
+      steps: null
+    print_every: 10
+    clip_grad_norm: 100
+    bf16: ${bf16}
+  evaluate_every_n_steps: 500
+  max_epochs: ${epochs}
+  max_steps: null
+  callbacks:
+    - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
+      job_config: ${job}
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 5000
+      max_saved_checkpoints: 3
+      save_best_val_checkpoint: true

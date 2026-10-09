@@ -16,10 +16,75 @@ import torch
 from omegaconf import DictConfig
 
 from fairchem.core.common.utils import load_state_dict, match_state_dict
+from fairchem.core.modules.normalization.element_references import (
+    AtomElementReferences,
+    ElementReferences,
+    PointChargeEdgeReferences,
+    TaskReferences,
+)
 
 if TYPE_CHECKING:
+    from fairchem.core.datasets.atomic_data import AtomicData
     from fairchem.core.units.mlip_unit.api.inference import MLIPInferenceCheckpoint
     from fairchem.core.units.mlip_unit.mlip_unit import Task
+
+
+def predicted_edge_index(
+    task_output: dict[str, torch.Tensor] | torch.Tensor,
+) -> torch.Tensor | None:
+    """The graph an edge head predicted on, if it reported one."""
+    if not isinstance(task_output, dict):
+        return None
+    return task_output.get("edge_index")
+
+
+def apply_task_references(
+    task: Task,
+    batch: AtomicData,
+    tensor: torch.Tensor,
+    predictions: dict[str, dict[str, torch.Tensor]],
+) -> torch.Tensor:
+    """Subtract the task's references from a (model-graph aligned) label tensor."""
+    refs = task.element_references
+    if refs is None:
+        return tensor
+    if isinstance(refs, PointChargeEdgeReferences):
+        edge_index = _references_edge_index(batch, predictions[task.name])
+        return refs.apply_refs(batch, tensor, edge_index, predictions)
+    return _node_or_system_references(refs).apply_refs(batch, tensor)
+
+
+def undo_task_references(
+    task: Task,
+    batch: AtomicData,
+    tensor: torch.Tensor,
+    predictions: dict[str, dict[str, torch.Tensor]],
+) -> torch.Tensor:
+    """Add the task's references back onto a (denormalized) prediction tensor."""
+    refs = task.element_references
+    if refs is None:
+        return tensor
+    if isinstance(refs, PointChargeEdgeReferences):
+        edge_index = _references_edge_index(batch, predictions[task.name])
+        return refs.undo_refs(batch, tensor, edge_index, predictions)
+    return _node_or_system_references(refs).undo_refs(batch, tensor)
+
+
+def _node_or_system_references(
+    refs: TaskReferences,
+) -> ElementReferences | AtomElementReferences:
+    if not isinstance(refs, (ElementReferences, AtomElementReferences)):
+        raise TypeError(f"Unsupported task references type: {type(refs).__name__}")
+    return refs
+
+
+def _references_edge_index(
+    batch: AtomicData, task_output: dict[str, torch.Tensor] | torch.Tensor
+) -> torch.Tensor:
+    """Edge layout of an edge task's predictions: the model graph if the head
+    reported one (labels are re-indexed onto it), the dataset's otherwise."""
+    edge_index = predicted_edge_index(task_output)
+    return batch.edge_index if edge_index is None else edge_index
 
 
 def load_inference_model(

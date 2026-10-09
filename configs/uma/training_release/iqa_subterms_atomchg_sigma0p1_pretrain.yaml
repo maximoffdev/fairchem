@@ -1,0 +1,14 @@
+# Run 3: as iqa_subterms_atomchg_pretrain.yaml (run 2, sigma 0.02) with 5x the noise on
+# the q(A) input.
+defaults:
+  - iqa_subterms_atomchg_pretrain
+  - _self_
+
+cutoff_radius: 4.0  # A
+
+job:
+  run_name: le-subterms_sharedtrunk_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_4A_40h
+
+dataset:
+  iqa_train:
+    sigma_atomic_charge: 0.1

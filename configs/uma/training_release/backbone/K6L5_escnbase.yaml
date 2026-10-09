@@ -1,0 +1,50 @@
+# Backbone config mimicking the ESCNbase / EquFormerV2-Small architecture.
+# Mapped from original JSON config (non-MoE, sphere_channels=32, lmax=5, 6 layers).
+#
+# Params NOT applicable to eSCNMD (EquFormerV2-specific, silently dropped):
+#   attn_hidden_channels, num_heads, attn_alpha_channels, attn_value_channels,
+#   ffn_hidden_channels, use_coeff_encoding, use_m_share_rad,
+#   use_tp_reparam, use_s2_act_attn, use_attn_renorm, ffn_activation,
+#   use_gate_act, use_grid_mlp, use_sep_s2_act,
+#   alpha_drop, drop_path_rate, proj_drop, weight_init,
+#   enforce_max_neighbors_strictly, use_energy_lin_ref, load_energy_lin_ref
+model: fairchem.core.models.uma.escn_moe.eSCNMDMoeBackbone
+moe_dropout: 0.0
+moe_layer_type: ${moe_layer_type}
+num_experts: ${num_moe_experts}   # set to 1 in cluster config → effectively no MoE
+use_composition_embedding: true
+use_global_embedding: false
+
+max_num_elements: 100
+sphere_channels: 32          # original: sphere_channels=32
+lmax: 5                      # original: lmax_list=[5]
+mmax: 2                      # original: mmax_list=[2]
+grid_resolution: 16          # original: grid_resolution=16
+num_sphere_samples: 128      # original: num_sphere_samples=128
+
+otf_graph: ${otf_graph}
+max_neighbors: ${max_neighbors}   # 100 in escnbase cluster config
+always_use_pbc: false             # original: use_pbc=false (molecular, no PBC)
+use_pbc: false
+use_pbc_single: false
+
+cutoff: ${cutoff_radius}          # 6.35 Å (= 12.0 Bohr) from cluster config
+edge_channels: 32                 # original: edge_channels=32
+distance_function: gaussian       # original: distance_function=gaussian
+num_distance_basis: 128           # original: num_distance_basis=128
+
+regress_forces: False             # original: regress_forces=false
+regress_stress: ${regress_stress}
+direct_forces: ${direct_forces}
+
+num_layers: 6                     # original: num_layers=6
+hidden_channels: 32               # no equivalent in JSON; match sphere_channels
+norm_type: layer_norm_sh          # original: norm_type=layer_norm_sh
+act_type: gate
+ff_type: grid                     # use grid-based FF (compatible with grid_resolution)
+
+chg_spin_emb_type: "rand_emb"
+cs_emb_grad: True
+dataset_list: ${dataset_list}
+output_edge_features: True        # required for edge-level IQA predictions
+activation_checkpointing: False

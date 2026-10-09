@@ -1,0 +1,141 @@
+# Light q(A) predictor without any charge conditioning (cf. iqa_charge_pretrain.yaml,
+# which conditions on the total molecular charge). Uses the small K2L2_64 backbone
+# (backbone=K2L2_48 for an even smaller one).
+defaults:
+  - cluster: leipzig_cluster
+  - dataset: iqa_components
+  - tasks: iqa_atomic_charge
+  - backbone: K2L2_64
+  - _self_
+
+job:
+  device_type: ${cluster.device}
+  scheduler:
+    mode: ${cluster.mode}
+    ranks_per_node: ${cluster.ranks_per_node}
+    num_nodes: 1
+    slurm:
+      partition: ${cluster.partition}
+      mem_gb: ${cluster.mem_gb}
+      cpus_per_task: ${cluster.cpus_per_task}
+      timeout_hr: "${cluster.timeout_hr}"
+      setup_commands: ${cluster.setup_commands}
+  debug: ${cluster.debug}
+  run_dir: ${cluster.run_dir}
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch_nochargecond_lagcut5e-4_otf_300neighbors_9A_40h
+  logger:
+    _target_: fairchem.core.common.logger.WandBSingletonLogger.init_wandb
+    _partial_: true
+    entity: lamerslab
+    project: iqa
+
+# --- Runtime Hyperparameters ---
+epochs: 300
+bf16: True
+
+# --- Backbone/Model Variables (interpolated from cluster where VRAM-sensitive) ---
+moe_layer_type: pytorch
+num_moe_experts: ${cluster.num_moe_experts}
+otf_graph: True
+# Merged over the backbone config group, which is composed before _self_.
+backbone:
+  # No charge conditioning: the input charge is left out of the backbone entirely.
+  charge_conditioning: none
+  # The charge head does not differentiate the energy w.r.t. positions.
+  regress_forces: False
+
+max_neighbors: 300  # never binds: <= 50 neighbours within 9 A in all IQA pkls
+cutoff_radius: 9.0  # A; otf graph and radial basis cutoff of all IQA models
+regress_stress: False
+direct_forces: False
+
+iqa_charge_coef: 1.0
+
+# --- Dataset Setup ---
+dataset_list: ["iqa_pkl"]
+exclude_keys: ["source", "sid"]
+
+# Merged over the dataset config group. The backbone ignores the loaded total charge.
+dataset:
+  iqa_train:
+    lagrangian_cutoff: 5.0e-4
+
+train_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_train}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: True
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+eval_dataloader:
+  _target_: fairchem.core.components.common.dataloader_builder.get_dataloader
+  dataset: ${dataset.iqa_val}
+  batch_sampler_fn:
+    _target_: fairchem.core.datasets.samplers.max_atom_distributed_sampler.MaxAtomDistributedBatchSampler
+    _partial_: True
+    max_atoms: ${cluster.max_atoms}
+    shuffle: False
+    seed: 123
+  num_workers: ${cluster.dataloader_workers}
+  collate_fn:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.mt_collater_adapter
+    tasks: ${tasks}
+    exclude_keys: ${exclude_keys}
+
+heads:
+  # Invariant head (L=0 features + norms of L>0) -> a charge is a scalar.
+  # Returns {"pred": (N,)}, hence `property: pred` on the task.
+  iqa_charge:
+    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
+    dropout: 0.0
+    # q(A) of each molecule sums to its total charge (task normalizer must be identity)
+    conserve_total_charge: True
+
+runner:
+  _target_: fairchem.core.components.train.train_runner.TrainEvalRunner
+  train_dataloader: ${train_dataloader}
+  eval_dataloader: ${eval_dataloader}
+  train_eval_unit:
+    _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
+    job_config: ${job}
+    tasks: ${tasks}
+    model:
+      _target_: fairchem.core.models.base.HydraModel
+      backbone: ${backbone}
+      # The head returns a bare {property: tensor}, nested under its head name.
+      pass_through_head_outputs: false
+      heads: ${heads}
+    optimizer_fn:
+      _target_: torch.optim.AdamW
+      _partial_: true
+      lr: 8e-4
+      weight_decay: 1e-3
+    cosine_lr_scheduler_fn:
+      _target_: fairchem.core.units.mlip_unit.mlip_unit._get_consine_lr_scheduler
+      _partial_: true
+      warmup_factor: 0.2
+      warmup_epochs: 0.01
+      lr_min_factor: 0.01
+      epochs: ${epochs}
+      steps: null
+    print_every: 10
+    clip_grad_norm: 100
+    bf16: ${bf16}
+  max_epochs: ${epochs}
+  max_steps: null
+  evaluate_every_n_steps: 500
+  callbacks:
+    - _target_: fairchem.core.common.profiler_utils.ProfilerCallback
+      job_config: ${job}
+    - _target_: fairchem.core.components.train.train_runner.TrainCheckpointCallback
+      checkpoint_every_n_steps: 5000
+      max_saved_checkpoints: 3
+      save_best_val_checkpoint: true

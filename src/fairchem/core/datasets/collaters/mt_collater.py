@@ -78,9 +78,11 @@ class MTCollater:
                             dim = list(getattr(data, task).shape)
                         elif task_config["level"] == "atom":
                             dim = list(getattr(data, task).shape[1:])
+                        elif task_config["level"] == "edge":
+                            dim = list(getattr(data, task).shape[1:])
                         else:
                             raise ValueError(
-                                f"task level must be either system or atom, found {task_config['level']}"
+                                f"task level must be either system, atom, or edge, found {task_config['level']}"
                             )
                         datasets_in_batch_to_task_configs[data.dataset][task][
                             "out_spec"
@@ -122,5 +124,7 @@ class MTCollater:
                 dtype = getattr(torch, task_config[task]["out_spec"]["dtype"])
                 if task_config[task]["level"] == "atom":
                     dim = [data.natoms] + dim
+                elif task_config[task]["level"] == "edge":
+                    dim = [data.nedges] + dim
                 setattr(data, task, torch.full(dim, torch.inf, dtype=dtype))
         return data_list

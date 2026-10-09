@@ -39,6 +39,7 @@ from fairchem.core.units.mlip_unit.inference.inference_server_ray import (
 from fairchem.core.units.mlip_unit.utils import (
     load_inference_model,
     tf32_context_manager,
+    undo_task_references,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ def collate_predictions(predict_fn):
         if gp_utils.initialized():
             data.batch = data.batch_full
         collated_preds = defaultdict(list)
+        edge_batch = None
         for i, dataset in enumerate(data.dataset):
             for task in predict_unit.dataset_to_tasks[dataset]:
                 if task.level == "system":
@@ -64,6 +66,29 @@ def collate_predictions(predict_fn):
                 elif task.level == "atom":
                     collated_preds[task.property].append(
                         preds[task.name][data.batch == i]
+                    )
+                elif task.level == "edge":
+                    if preds[task.name].shape[0] != int(data.nedges.sum()):
+                        # The model built its graph on the fly, so per-edge outputs
+                        # are not ordered by data.edge_index and cannot be split
+                        # per system with data.nedges.
+                        raise RuntimeError(
+                            f"Edge task '{task.name}' returned "
+                            f"{preds[task.name].shape[0]} predictions for a batch with "
+                            f"{int(data.nedges.sum())} edges. Collated prediction "
+                            "requires the model to run on the input graph: set "
+                            "InferenceSettings.external_graph_gen=True (otf_graph off)."
+                        )
+                    if edge_batch is None:
+                        edge_counts = data.nedges.to(data.batch.device)
+                        edge_batch = torch.repeat_interleave(
+                            torch.arange(
+                                edge_counts.shape[0], device=edge_counts.device
+                            ),
+                            edge_counts,
+                        )
+                    collated_preds[task.property].append(
+                        preds[task.name][edge_batch == i]
                     )
                 else:
                     raise RuntimeError(
@@ -199,6 +224,7 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
             composition_sum,
             getattr(data, "charge", None),
             getattr(data, "spin", None),
+            getattr(data, "atomic_charges", None),
         )
         return comp_charge_spin, getattr(data, "dataset", [None])
 
@@ -252,6 +278,12 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
                 assert (
                     self.merged_on[0][2] == this_sys[0][2]
                 ), f"Cannot run on merged model on system. Spin is diferrent {self.merged_on[0][2]} vs {this_sys[0][2]}"
+                merged_q, this_q = self.merged_on[0][3], this_sys[0][3]
+                assert (merged_q is None and this_q is None) or (
+                    merged_q is not None
+                    and this_q is not None
+                    and torch.equal(merged_q, this_q)
+                ), "Cannot run on merged model on system. Atomic charges are different"
                 assert (
                     self.merged_on[1] == this_sys[1]
                 ), f"Cannot run on merged model on system. Dataset is diferrent {self.merged_on[1]} vs {this_sys[1]}"
@@ -268,9 +300,9 @@ class MLIPPredictUnit(PredictUnit[AtomicData], MLIPPredictUnitProtocol):
                 pred_output[task_name] = task.normalizer.denorm(
                     output[task_name][task.property]
                 )
-                if undo_element_references and task.element_references is not None:
-                    pred_output[task_name] = task.element_references.undo_refs(
-                        data_device, pred_output[task_name]
+                if undo_element_references:
+                    pred_output[task_name] = undo_task_references(
+                        task, data_device, pred_output[task_name], output
                     )
 
         return pred_output

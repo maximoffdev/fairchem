@@ -1,0 +1,11 @@
+# q(A) model conditioned on the total charge, with the q(A) sum constrained to it
+# (cf. iqa_charge_kfold.yaml), trained on the full train split without k-fold.
+defaults:
+  - iqa_charge_pretrain
+  - override backbone: K2L2_48
+  - _self_
+
+cutoff_radius: 4.0  # A
+
+job:
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-fulltrain_totalchargecond_qsum_lagcut5e-4_otf_300neighbors_4A_${cluster.timeout_hr}h
