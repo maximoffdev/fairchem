@@ -23,7 +23,12 @@ from fairchem.core.modules.iqa_coulomb import point_charge_pair_energy
 from ._load_utils import _load_from_config
 
 
-class ElementReferences(nn.Module):
+class TaskReferences(nn.Module):
+    """Common base of per-task label references. A single class is needed for
+    the ``Task.element_references`` annotation: OmegaConf rejects unions of classes."""
+
+
+class ElementReferences(TaskReferences):
     def __init__(
         self,
         element_references: torch.Tensor,
@@ -79,7 +84,7 @@ class ElementReferences(nn.Module):
         )
 
 
-class AtomElementReferences(nn.Module):
+class AtomElementReferences(TaskReferences):
     """Per-atom element references — subtracts a fixed per-element scalar from
     each atom's target value before computing the loss, and adds it back at
     inference.  Unlike ElementReferences (which sums refs over all atoms in a
@@ -121,7 +126,7 @@ class AtomElementReferences(nn.Module):
             return (tensor.double() + refs.view_as(tensor)).to(tensor.dtype)
 
 
-class PointChargeEdgeReferences(nn.Module):
+class PointChargeEdgeReferences(TaskReferences):
     """Per-edge Coulomb baseline ``sign * c_A * c_B / (2 R_AB)`` for IQA pair labels.
 
     Subclasses choose the point charges c. Edge tensors are laid out on

@@ -17,7 +17,10 @@ from omegaconf import DictConfig
 
 from fairchem.core.common.utils import load_state_dict, match_state_dict
 from fairchem.core.modules.normalization.element_references import (
+    AtomElementReferences,
+    ElementReferences,
     PointChargeEdgeReferences,
+    TaskReferences,
 )
 
 if TYPE_CHECKING:
@@ -48,7 +51,7 @@ def apply_task_references(
     if isinstance(refs, PointChargeEdgeReferences):
         edge_index = _references_edge_index(batch, predictions[task.name])
         return refs.apply_refs(batch, tensor, edge_index, predictions)
-    return refs.apply_refs(batch, tensor)
+    return _node_or_system_references(refs).apply_refs(batch, tensor)
 
 
 def undo_task_references(
@@ -64,7 +67,15 @@ def undo_task_references(
     if isinstance(refs, PointChargeEdgeReferences):
         edge_index = _references_edge_index(batch, predictions[task.name])
         return refs.undo_refs(batch, tensor, edge_index, predictions)
-    return refs.undo_refs(batch, tensor)
+    return _node_or_system_references(refs).undo_refs(batch, tensor)
+
+
+def _node_or_system_references(
+    refs: TaskReferences,
+) -> ElementReferences | AtomElementReferences:
+    if not isinstance(refs, (ElementReferences, AtomElementReferences)):
+        raise TypeError(f"Unsupported task references type: {type(refs).__name__}")
+    return refs
 
 
 def _references_edge_index(

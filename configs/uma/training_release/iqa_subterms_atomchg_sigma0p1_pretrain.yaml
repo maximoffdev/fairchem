@@ -4,8 +4,10 @@ defaults:
   - iqa_subterms_atomchg_pretrain
   - _self_
 
+cutoff_radius: 4.0  # A
+
 job:
-  run_name: le-subterms_sharedtrunk_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_9A_40h
+  run_name: le-subterms_sharedtrunk_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_4A_40h
 
 dataset:
   iqa_train:

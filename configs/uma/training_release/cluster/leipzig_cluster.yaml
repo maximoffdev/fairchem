@@ -18,9 +18,9 @@ debug: false
 # Keep mem_gb <= cpus_per_task * 31.25 GiB (4 CPUs -> 125 GiB) to stay under the cap.
 mem_gb: 64
 cpus_per_task: 4
-timeout_hr: "40"
+timeout_hr: "14"
 partition: clara
-max_atoms: 450
+max_atoms: 600 # 450
 max_neighbors: 300    # K4L2 is small enough to handle full neighbor count
 num_moe_experts: 1
 cutoff_radius: 6.0   # Å; matched to K10L4 backbone default

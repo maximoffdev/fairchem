@@ -10,9 +10,10 @@ defaults:
 
 fold: ???
 num_folds: 5
+cutoff_radius: 4.0  # A
 
 job:
-  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-kfold${num_folds}-fold${fold}_totalchargecond_qsum_lagcut5e-4_otf_300neighbors_9A_40h
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-kfold${num_folds}-fold${fold}_totalchargecond_qsum_lagcut5e-4_otf_300neighbors_4A_40h
 
 dataset:
   iqa_train:

@@ -50,9 +50,7 @@ from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.datasets.collaters.mt_collater import MTCollater
 from fairchem.core.modules.edge_matching import EdgeAlignment, build_edge_alignment
 from fairchem.core.modules.normalization.element_references import (  # noqa: TCH001
-    AtomElementReferences,
-    ElementReferences,
-    PointChargeEdgeReferences,
+    TaskReferences,
 )
 from fairchem.core.modules.normalization.normalizer import Normalizer  # noqa: TCH001
 from fairchem.core.modules.scheduler import CosineLRLambda
@@ -97,9 +95,7 @@ class Task:
     normalizer: Normalizer
     datasets: list[str]
     loss_fn: torch.nn.Module | None = None
-    element_references: Optional[
-        ElementReferences | AtomElementReferences | PointChargeEdgeReferences
-    ] = None
+    element_references: Optional[TaskReferences] = None
     metrics: list[str] = field(default_factory=list)
     train_on_free_atoms: bool = True
     eval_on_free_atoms: bool = True
