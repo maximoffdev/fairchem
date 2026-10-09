@@ -58,7 +58,7 @@ from fairchem.core.models.utils.irreps import cg_change_mat, irreps_sum
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
 from fairchem.core.modules.iqa_coulomb import point_charge_pair_energy
 
-from .escn_md_block import eSCNMD_Block
+from .escn_md_block import eSCNMD_Block, edge_envelope, smooth_degree
 
 if TYPE_CHECKING:
     from fairchem.core.datasets.atomic_data import AtomicData
@@ -108,8 +108,30 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
         always_use_pbc: bool = True,
         output_edge_features: bool = False,
         term_element_refs: dict[str, list[float]] | None = None,
+        aggregation_norm: Literal["constant", "sqrt_degree"] = "constant",
+        degree_embedding: bool = False,
+        strictly_local: bool = False,
     ) -> None:
+        """
+        Locality options for transfer to larger systems than seen in training (all off
+        by default, which is the original UMA behaviour):
+
+        aggregation_norm: ``"constant"`` sums messages (edge degree embedding / 5);
+            ``"sqrt_degree"`` divides each node's message sum by sqrt(d), with d the
+            smooth neighbour count sum_j envelope(r_ij / cutoff), so feature scales do
+            not grow with the number of neighbours.
+        degree_embedding: add an embedding of log(1 + d) to the l=0 node features, so
+            the neighbour count stays available once sums are normalized.
+        strictly_local: every layer reads the fixed species (+ charge) embedding on the
+            neighbour side of each edge and only updates the central atom, so a node
+            depends on atoms within one cutoff of it at any depth (Allegro-like),
+            instead of num_layers x cutoff.
+        """
         super().__init__()
+        if aggregation_norm not in ("constant", "sqrt_degree"):
+            raise ValueError(f"Unknown aggregation_norm {aggregation_norm}")
+        self.aggregation_norm = aggregation_norm
+        self.strictly_local = strictly_local
         self.max_num_elements = max_num_elements
         self.lmax = lmax
         self.mmax = mmax
@@ -287,6 +309,16 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             self.norm_type,
             lmax=self.lmax,
             num_channels=self.sphere_channels,
+        )
+
+        self.degree_embedding = (
+            nn.Sequential(
+                nn.Linear(1, self.sphere_channels),
+                nn.SiLU(),
+                nn.Linear(self.sphere_channels, self.sphere_channels),
+            )
+            if degree_embedding
+            else None
         )
 
         self.rot_mat_wigner_cuda = None  # lazily initialize this
@@ -565,6 +597,27 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             sys_node_embedding = csd_node_emb_full
         x_message[:, 0, :] = x_message[:, 0, :] + sys_node_embedding
 
+        # locality options (see __init__)
+        degree = None
+        if self.aggregation_norm == "sqrt_degree" or self.degree_embedding is not None:
+            degree = smooth_degree(
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"][1] - graph_dict["node_offset"],
+                x_message.shape[0],
+                self.cutoff,
+            )
+        node_scale = (
+            degree.clamp_min(1.0).rsqrt()
+            if self.aggregation_norm == "sqrt_degree"
+            else None
+        )
+        # neighbour-side features of the strictly local mode: species + charge only
+        x_species = x_message.clone() if self.strictly_local else None
+        if self.degree_embedding is not None:
+            x_message[:, 0, :] = x_message[:, 0, :] + self.degree_embedding(
+                torch.log1p(degree).unsqueeze(-1).to(x_message.dtype)
+            )
+
         ###
         # Hook to allow MOLE
         ###
@@ -589,14 +642,31 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
             x_edge = torch.cat(
                 (edge_distance_embedding, source_embedding, target_embedding), dim=1
             )
-            x_message = self.edge_degree_embedding(
-                x_message,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                wigner_and_M_mapping_inv,
-                graph_dict["node_offset"],
-            )
+            if node_scale is None:
+                x_message = self.edge_degree_embedding(
+                    x_message,
+                    x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    wigner_and_M_mapping_inv,
+                    graph_dict["node_offset"],
+                )
+            else:
+                # the embedding divides its sum by a constant; use sqrt(degree) instead
+                degree_sum = (
+                    self.edge_degree_embedding(
+                        torch.zeros_like(x_message),
+                        x_edge,
+                        graph_dict["edge_distance"],
+                        graph_dict["edge_index"],
+                        wigner_and_M_mapping_inv,
+                        graph_dict["node_offset"],
+                    )
+                    * self.edge_degree_embedding.rescale_factor
+                )
+                x_message = x_message + degree_sum * node_scale.view(-1, 1, 1).to(
+                    degree_sum.dtype
+                )
 
         ###############################################################
         # Update spherical node embeddings
@@ -612,6 +682,8 @@ class eSCNMDBackbone(nn.Module, MOLEInterface):
                     wigner_and_M_mapping_inv,
                     sys_node_embedding=sys_node_embedding,
                     node_offset=graph_dict["node_offset"],
+                    x_source=x_species,
+                    node_scale=node_scale,
                 )
 
         # Final layer norm
@@ -1356,9 +1428,16 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         extra_node_task_name: str | None = None,
         symmetric_edge_prediction: bool = False,
         reversed_edge_task_name: str | None = None,
+        attention_gating: Literal["softmax", "sigmoid"] = "softmax",
     ) -> None:
         """
         Args (IQA additions):
+            attention_gating: ``"softmax"`` normalizes the attention over each target
+                atom's incoming edges, so an edge's output depends on the atom's other
+                neighbours; ``"sigmoid"`` gates every edge independently, and node
+                outputs become a smooth sum over neighbours divided by sqrt(degree)
+                (see ``aggregate_to_nodes``), which transfers to atoms with more
+                neighbours than seen in training.
             symmetric_edge_prediction: predict X(A,B) = X(B,A) exactly, as the mean of
                 the projections of both directions' messages (all IQA pair energies
                 but V_ne/V_en are symmetric).
@@ -1380,6 +1459,9 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             )
         self.symmetric_edge_prediction = symmetric_edge_prediction
         self.reversed_edge_task_name = reversed_edge_task_name
+        if attention_gating not in ("softmax", "sigmoid"):
+            raise ValueError(f"Unknown attention_gating {attention_gating}")
+        self.attention_gating = attention_gating
 
         # === EBDM-origin: Parameter initialization ===
         self.backbone = backbone
@@ -1749,7 +1831,10 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             x_0_alpha = self.alpha_act(x_0_alpha)
             alpha = torch.einsum("bik,ik->bi", x_0_alpha, self.alpha_dot)
         # EBDM-origin: Softmax per target node (edge_index[1] groups edges by target).
-        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
+        if self.attention_gating == "softmax":
+            alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
+        else:
+            alpha = torch.sigmoid(alpha)
         alpha = alpha.view(alpha.shape[0], 1, self.num_heads, 1)
         if self.alpha_dropout is not None:
             alpha = self.alpha_dropout(alpha)
@@ -1807,6 +1892,27 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         x_flipped = self.compute_edge_messages(data, flipped)
         return torch.where(has_reverse.view(-1, 1, 1), x_reverse, x_flipped)
 
+    def aggregate_to_nodes(
+        self, x_message: torch.Tensor, emb: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Sum incoming edge messages per target node (fp32).
+
+        With softmax attention the weights already sum to one per node. With sigmoid
+        gating each message is weighted by the cutoff envelope (smooth in the
+        positions) and the sum is divided by sqrt of the smooth neighbour count.
+        """
+        edge_index = emb["edge_index"]
+        num_nodes = emb["node_embedding"].shape[0]
+        if self.attention_gating == "softmax":
+            return _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
+        distance = torch.linalg.norm(emb["edge_distance_vec"].float(), dim=-1)
+        env = edge_envelope(distance, self.backbone.cutoff)
+        summed = _scatter_to_nodes_fp32(
+            x_message * env.view(-1, 1, 1), edge_index, num_nodes
+        )
+        degree = smooth_degree(distance, edge_index[1], num_nodes, self.backbone.cutoff)
+        return summed * degree.clamp_min(1.0).rsqrt().view(-1, 1, 1)
+
     def finalize_output(self, out_embedding: torch.Tensor) -> torch.Tensor:
         """Narrow to the requested output degree, squeeze, and gather under GP."""
         out_embedding = out_embedding.narrow(
@@ -1833,8 +1939,6 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             - {node_task_name: {"node_pred": [N, 1]}} if node_prediction=True
         """
         # === Trunk: shared SO(2) attention over edges (see compute_edge_messages) ===
-        edge_index = emb["edge_index"]
-        num_nodes = emb["node_embedding"].shape[0]
         x_message = self.compute_edge_messages(data, emb)
 
         # === FAIRCHEM ADAPTATION: Task-keyed output dict ===
@@ -1874,7 +1978,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # FAIRCHEM ADAPTATION: Use torch_geometric.utils.scatter instead of
         # SO3_Embedding._reduce_edge() method. Scatter sums edge messages [E, F]
         # by target node index [E] to produce node messages [N, F].
-        x_nodes = _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
+        x_nodes = self.aggregate_to_nodes(x_message, emb)
 
         # === EBDM-origin: Node prediction (if enabled) ===
         if self.node_prediction and self.output_channels_nodes > 0:
@@ -2385,8 +2489,6 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
                 outputs.update(head(data, emb))
             return outputs
 
-        edge_index = emb["edge_index"]
-        num_nodes = emb["node_embedding"].shape[0]
         x_message = self.trunk.compute_edge_messages(data, emb)
 
         x_reverse = (
@@ -2411,7 +2513,7 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
 
         if self.node_task_names:
             # Same neighbor aggregation the single-task head does, but only once.
-            x_nodes = _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
+            x_nodes = self.trunk.aggregate_to_nodes(x_message, emb)
             for task in self.node_task_names:
                 proj_1 = (
                     self.node_proj_1_tasks[task]

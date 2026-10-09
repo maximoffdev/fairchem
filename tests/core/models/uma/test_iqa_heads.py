@@ -1,9 +1,11 @@
-"""IQA heads: exact A<->B edge symmetries, total-charge conservation, fp32 outputs."""
+"""IQA heads and backbone options: exact A<->B edge symmetries, total-charge
+conservation, fp32 outputs, and the locality options for transfer to larger systems."""
 
 from __future__ import annotations
 
 import pytest
 import torch
+from ase import Atoms
 from ase.build import molecule as get_molecule
 
 from fairchem.core.datasets.atomic_data import AtomicData, atomicdata_list_to_batch
@@ -14,6 +16,7 @@ from fairchem.core.models.uma.escn_md import (
     _shift_to_total_charge,
     eSCNMDBackbone,
 )
+from fairchem.core.models.uma.escn_md_block import smooth_degree
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
 
 BACKBONE_KWARGS = {
@@ -213,3 +216,86 @@ def test_charge_head_conserves_total_charge_in_fp32():
     torch.testing.assert_close(
         _molecule_sums(q, batch), batch.charge.to(torch.float32), atol=1e-5, rtol=0
     )
+
+
+@pytest.fixture()
+def no_frame_roll(monkeypatch):
+    """Fix the random roll of the edge frames, so outputs on different graphs compare."""
+    monkeypatch.setattr(torch, "rand_like", torch.zeros_like)
+
+
+def _chain(x_last: float) -> AtomicData:
+    """H atoms at x = 0, 2 and x_last (A): with a 3 A cutoff atom 0 only sees atom 1."""
+    atoms = Atoms("HHH", positions=[[0.0, 0, 0], [2.0, 0, 0], [x_last, 0, 0]])
+    return atomicdata_list_to_batch(
+        [
+            AtomicData.from_ase(
+                atoms,
+                task_name="iqa_pkl",
+                r_edges=False,
+                r_data_keys=["spin", "charge"],
+            )
+        ]
+    )
+
+
+@pytest.mark.parametrize("strictly_local", [True, False])
+def test_strictly_local_node_sees_one_cutoff(no_frame_roll, strictly_local: bool):
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(
+        **{**BACKBONE_KWARGS, "cutoff": 3.0}, strictly_local=strictly_local
+    )
+    with torch.no_grad():
+        near = backbone(_chain(4.0))["node_embedding"][0]
+        moved = backbone(_chain(4.4))["node_embedding"][0]  # atom 2 stays > 3 A from 0
+    assert torch.equal(near, moved) == strictly_local
+
+
+@pytest.mark.parametrize("gating", ["sigmoid", "softmax"])
+def test_sigmoid_gated_edges_ignore_other_neighbours(
+    backbone_and_emb, no_frame_roll, gating
+):
+    backbone, batch, emb = backbone_and_emb
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, node_prediction=False, attention_gating=gating
+    )
+    dropped = _drop_edges(emb, torch.tensor([0]))
+    with torch.no_grad():
+        full = head(batch, emb)["iqa_inter_ab"]["edge_pred"]
+        less = head(batch, dropped)["iqa_inter_ab"]["edge_pred"]
+    # the other edges into the dropped edge's target atom
+    target = emb["edge_index"][1, 0]
+    others = (emb["edge_index"][1] == target).nonzero().view(-1)[1:]
+    same = torch.allclose(full[others], less[others - 1], atol=1e-6)
+    assert same == (gating == "sigmoid")
+
+
+def test_sqrt_degree_backbone_is_continuous_across_the_cutoff(no_frame_roll):
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(
+        **{**BACKBONE_KWARGS, "cutoff": 3.0},
+        aggregation_norm="sqrt_degree",
+        degree_embedding=True,
+        strictly_local=True,
+    )
+    with torch.no_grad():
+        inside = backbone(_chain(2.0 + 2.999))["node_embedding"][1]
+        outside = backbone(_chain(2.0 + 3.001))["node_embedding"][1]
+    torch.testing.assert_close(inside, outside, atol=1e-4, rtol=0)
+
+
+def test_smooth_degree_counts_neighbours_with_the_envelope():
+    distance = torch.tensor([0.0, 1.5, 2.999, 3.0])
+    degree = smooth_degree(distance, torch.tensor([0, 0, 1, 1]), 2, cutoff=3.0)
+    assert degree[0] > 1.0
+    assert degree[1] < 1e-6
+
+
+def test_locality_option_validation(backbone_and_emb):
+    backbone, _, _ = backbone_and_emb
+    with pytest.raises(ValueError, match="aggregation_norm"):
+        eSCNMDBackbone(**BACKBONE_KWARGS, aggregation_norm="mean")
+    with pytest.raises(ValueError, match="attention_gating"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, attention_gating="relu"
+        )
