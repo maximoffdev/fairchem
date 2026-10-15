@@ -1,0 +1,10 @@
+# The 8 A subterms rerun (iqa_subterms_atomchg_local_so2gate_8A) at a 6 A cutoff. With
+# the strictly local backbone this is also the receptive field. See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_subterms_atomchg_local_so2gate_8A
+  - _self_
+
+job:
+  run_name: le-subterms_sharedtrunk_strictlocal_sqrtdeg_sigmoidattn_so2gate_atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_6A_40h
+
+cutoff_radius: 6.0  # A; otf graph and radial basis cutoff

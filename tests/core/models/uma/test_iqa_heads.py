@@ -7,9 +7,12 @@ import pytest
 import torch
 from ase import Atoms
 from ase.build import molecule as get_molecule
+from e3nn.o3 import rand_matrix
 
 from fairchem.core.datasets.atomic_data import AtomicData, atomicdata_list_to_batch
+from fairchem.core.models.uma.common.rotation import eulers_to_wigner
 from fairchem.core.models.uma.escn_md import (
+    IQA_IntraSO2MultiHead,
     IQA_MultiTaskSO2Head,
     IQA_Node_Head2,
     SO2EquivariantGraphAttentionNodeEdgePrediction,
@@ -17,6 +20,7 @@ from fairchem.core.models.uma.escn_md import (
     eSCNMDBackbone,
 )
 from fairchem.core.models.uma.escn_md_block import smooth_degree
+from fairchem.core.models.uma.nn.activation import SeparableS2Activation
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
 
 BACKBONE_KWARGS = {
@@ -35,18 +39,21 @@ BACKBONE_KWARGS = {
 }
 
 
-def _batch() -> AtomicData:
-    return atomicdata_list_to_batch(
-        [
+def _batch(rotation: torch.Tensor | None = None) -> AtomicData:
+    data = []
+    for name in ("H2O", "NH3"):
+        atoms = get_molecule(name)
+        if rotation is not None:
+            atoms.positions = atoms.positions @ rotation.numpy().T
+        data.append(
             AtomicData.from_ase(
-                input_atoms=get_molecule(name),
+                input_atoms=atoms,
                 task_name="iqa_pkl",
                 r_edges=False,
                 r_data_keys=["spin", "charge"],
             )
-            for name in ("H2O", "NH3")
-        ]
-    )
+        )
+    return atomicdata_list_to_batch(data)
 
 
 @pytest.fixture()
@@ -299,3 +306,201 @@ def test_locality_option_validation(backbone_and_emb):
         SO2EquivariantGraphAttentionNodeEdgePrediction(
             backbone, attention_gating="relu"
         )
+
+
+# -------- Edge-frame activations and the random roll of the edge frame --------
+
+
+def _roll_matrices(backbone: eSCNMDBackbone, gamma: float, n: int) -> torch.Tensor:
+    """Rotation by gamma about the edge axis in the m-ordered truncated basis (fp64)."""
+    lmax, mmax = backbone.lmax, backbone.mmax
+    jd = [getattr(backbone, f"Jd_{l}").double() for l in range(lmax + 1)]
+    angles = torch.full((n,), gamma, dtype=torch.float64)
+    zeros = torch.zeros_like(angles)
+    wigner = eulers_to_wigner((angles, zeros, zeros), 0, lmax, jd)
+    idx = backbone.SO3_grid["lmax_lmax"].mapping.coefficient_idx(lmax, mmax)
+    wigner = wigner[:, idx][:, :, idx]
+    to_m = backbone.mappingReduced.to_m.double()
+    return to_m @ wigner @ to_m.T
+
+
+def _scaled(emb: dict[str, torch.Tensor], scale: float) -> dict[str, torch.Tensor]:
+    """Untrained heads have tiny activations, where SiLU is nearly quadratic and the
+    grid quadrature happens to be exact; scale up to the O(1) regime of trained nets."""
+    return {**emb, "node_embedding": emb["node_embedding"] * scale}
+
+
+def _fixed_roll(monkeypatch, turns: float) -> None:
+    monkeypatch.setattr(torch, "rand_like", lambda x, **kw: torch.full_like(x, turns))
+
+
+@pytest.mark.parametrize(
+    "activation_type, grid_resolution, tol",
+    [
+        ("so2_gate", None, 1e-12),
+        ("gate", None, 1e-12),
+        ("sep_s2", None, 0.3),  # quadrature aliasing: approximate only
+        ("sep_s2", 32, 1e-3),
+    ],
+)
+def test_edge_frame_activation_roll_equivariance(
+    backbone_and_emb, activation_type: str, grid_resolution: int | None, tol: float
+):
+    backbone, _, _ = backbone_and_emb
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, activation_type=activation_type, s2_grid_resolution=grid_resolution
+    )
+    act = head.act.double()
+    n, num_coefficients = 32, backbone.mappingReduced.to_m.shape[0]
+    torch.manual_seed(0)
+    x = 3.0 * torch.randn(
+        n, num_coefficients, head.hidden_channels, dtype=torch.float64
+    )
+    num_gates = head.hidden_channels * (
+        backbone.lmax if activation_type == "gate" else 1
+    )
+    gating = torch.randn(n, num_gates, dtype=torch.float64)
+    roll = _roll_matrices(backbone, 1.3, n)
+    with torch.no_grad():
+        reference = act(gating, x)
+        err = (act(gating, torch.bmm(roll, x)) - torch.bmm(roll, reference)).abs().max()
+    assert err / reference.abs().max() < tol
+
+
+@pytest.mark.parametrize("activation_type", ["so2_gate", "gate"])
+def test_exact_head_predictions_do_not_depend_on_the_frame_roll(
+    backbone_and_emb, monkeypatch, activation_type: str
+):
+    backbone, batch, emb = backbone_and_emb
+    emb = _scaled(emb, 30.0)
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, activation_type=activation_type
+    )
+    preds = []
+    for turns in (0.0, 0.3, 0.6):
+        _fixed_roll(monkeypatch, turns)
+        with torch.no_grad():
+            out = head(batch, emb)
+        preds.append(
+            (out["iqa_inter_ab"]["edge_pred"], out["iqa_intra_a"]["node_pred"])
+        )
+    for edge, node in preds[1:]:
+        torch.testing.assert_close(edge, preds[0][0], atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(node, preds[0][1], atol=1e-5, rtol=1e-5)
+
+
+def test_grid_activation_head_depends_on_the_frame_roll(backbone_and_emb, monkeypatch):
+    """Documents why the exact activation is the default: the grid activation's
+    output moves with the arbitrary roll, by far more than the tolerance above."""
+    backbone, batch, emb = backbone_and_emb
+    emb = _scaled(emb, 100.0)
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, activation_type="sep_s2"
+    )
+    preds = []
+    for turns in (0.0, 0.3):
+        _fixed_roll(monkeypatch, turns)
+        with torch.no_grad():
+            preds.append(head(batch, emb)["iqa_inter_ab"]["edge_pred"])
+    assert (preds[0] - preds[1]).abs().max() > 1e-4
+
+
+def test_exact_head_is_rotation_invariant(monkeypatch):
+    _fixed_roll(monkeypatch, 0.0)
+    torch.manual_seed(0)
+    # The default grid feed-forward of the backbone is only approximately
+    # rotation-equivariant; the IQA configs use the exact spectral one.
+    backbone = eSCNMDBackbone(**BACKBONE_KWARGS, ff_type="spectral")
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, activation_type="so2_gate"
+    )
+    torch.manual_seed(1)
+    rotation = rand_matrix()
+    batch, rotated = _batch(), _batch(rotation)
+    with torch.no_grad():
+        out = head(batch, _scaled(backbone(batch), 30.0))
+        out_rot = head(rotated, _scaled(backbone(rotated), 30.0))
+    perm = match_edges_by_node_pairs(
+        out["iqa_inter_ab"]["edge_index"],
+        out_rot["iqa_inter_ab"]["edge_index"],
+        batch.num_nodes,
+    )
+    assert bool((perm >= 0).all())
+    torch.testing.assert_close(
+        out["iqa_inter_ab"]["edge_pred"],
+        out_rot["iqa_inter_ab"]["edge_pred"][perm],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    torch.testing.assert_close(
+        out["iqa_intra_a"]["node_pred"],
+        out_rot["iqa_intra_a"]["node_pred"],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.parametrize(
+    "activation_type, depends", [("so2_gate", True), ("sep_s2", True), ("gate", False)]
+)
+def test_m_nonzero_edge_frame_features_reach_scalar_outputs(
+    backbone_and_emb, no_frame_roll, activation_type: str, depends: bool
+):
+    """Scalar outputs only read m=0 features after the second SO(2) convolution, so a
+    gate activation makes every m!=0 input dead; the other activations couple them in."""
+    backbone, batch, emb = backbone_and_emb
+    emb = _scaled(emb, 30.0)
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, activation_type=activation_type
+    )
+
+    def zero_m_nonzero(module, args):
+        gating, x = args
+        x = x.clone()
+        x[:, backbone.lmax + 1 :] = 0
+        return gating, x
+
+    with torch.no_grad():
+        full = head(batch, emb)["iqa_inter_ab"]["edge_pred"]
+        handle = head.act.register_forward_pre_hook(zero_m_nonzero)
+        zeroed = head(batch, emb)["iqa_inter_ab"]["edge_pred"]
+        handle.remove()
+    assert (not torch.equal(full, zeroed)) == depends
+
+
+def test_default_activation_keeps_pre_fix_checkpoints_loadable(backbone_and_emb):
+    """Checkpoints trained before the activation fix store neither activation weights
+    nor an activation_type, so the default must stay the parameter-free legacy one."""
+    backbone, _, _ = backbone_and_emb
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(backbone)
+    assert isinstance(head.act, SeparableS2Activation)
+    assert not [key for key in head.state_dict() if key.startswith("act.")]
+
+
+def test_activation_type_validation(backbone_and_emb):
+    backbone, _, _ = backbone_and_emb
+    with pytest.raises(ValueError, match="activation_type"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(backbone, activation_type="relu")
+    with pytest.raises(ValueError, match="s2_grid_resolution"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, activation_type="gate", s2_grid_resolution=16
+        )
+    with pytest.raises(NotImplementedError, match="use_s2_act_attn"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(backbone, use_s2_act_attn=True)
+
+
+def test_intra_multi_term_head_shares_the_trunk(backbone_and_emb, no_frame_roll):
+    backbone, batch, emb = backbone_and_emb
+    head = IQA_IntraSO2MultiHead(
+        backbone, term_names=["iqa_kinetic", "iqa_vne"], predict_aggregate=True
+    )
+    with torch.no_grad():
+        out = head(batch, emb)
+    assert set(out) == {"iqa_kinetic", "iqa_vne", "iqa_intra_a"}
+    for value in out.values():
+        assert value["node_pred"].shape == (batch.num_nodes,)
+        assert value["node_pred"].dtype == torch.float32
+    torch.testing.assert_close(
+        out["iqa_intra_a"]["node_pred"],
+        out["iqa_kinetic"]["node_pred"] + out["iqa_vne"]["node_pred"],
+    )

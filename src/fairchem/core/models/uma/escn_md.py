@@ -50,9 +50,11 @@ from fairchem.core.models.uma.nn.so2_layers import SO2_Convolution
 from fairchem.core.models.uma.nn.so2_tp import SO2_Convolution_TensorProduct
 from fairchem.core.models.uma.nn.activation import (
     GateActivation,
-    S2Activation,
+    S2Activation_M,
     SeparableS2Activation,
+    SeparableS2Activation_M,
     SmoothLeakyReLU,
+    SO2InvariantGatedActivation,
 )
 from fairchem.core.models.utils.irreps import cg_change_mat, irreps_sum
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
@@ -1418,8 +1420,10 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         use_tp_reparam: bool = False,
         use_s2_act_attn: bool = False,
         use_attn_renorm: bool = True,
-        use_gate_act: bool = False,
-        use_sep_s2_act: bool = True,
+        activation_type: Literal[
+            "legacy_sep_s2", "so2_gate", "sep_s2", "s2", "gate"
+        ] = "legacy_sep_s2",
+        s2_grid_resolution: int | None = None,
         alpha_drop: float = 0.0,
         edge_prediction: bool = True,
         node_prediction: bool = True,
@@ -1432,6 +1436,21 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
     ) -> None:
         """
         Args (IQA additions):
+            activation_type: nonlinearity between the two SO(2) convolutions, applied
+                in the edge frame (see ``_build_edge_frame_activation``):
+                ``"so2_gate"`` is exactly equivariant under the roll of the edge frame
+                and still feeds m!=0 features into the scalar outputs -- use it for
+                new runs; ``"legacy_sep_s2"`` (default, so checkpoints trained before
+                the fix load unchanged) is the original l-ordered grid activation
+                applied to m-ordered features, far from equivariant;
+                ``"sep_s2"``/``"s2"`` are the EquiformerV2 grid activations, only
+                approximately equivariant (quadrature aliasing), so predictions depend
+                on the random roll; ``"gate"`` is exact but blind to m!=0 inputs for
+                scalar outputs.
+            s2_grid_resolution: latitude/longitude resolution of the grid used by the
+                ``"sep_s2"``/``"s2"`` activations (default: the backbone grid, 7
+                longitudes for lmax=mmax=2); 16 reduces the roll dependence to about
+                fp32 noise.
             attention_gating: ``"softmax"`` normalizes the attention over each target
                 atom's incoming edges, so an edge's output depends on the atom's other
                 neighbours; ``"sigmoid"`` gates every edge independently, and node
@@ -1507,13 +1526,23 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         self.use_tp_reparam = use_tp_reparam
         self.use_s2_act_attn = use_s2_act_attn
         self.use_attn_renorm = use_attn_renorm
-        self.use_gate_act = use_gate_act
-        self.use_sep_s2_act = use_sep_s2_act
-        if self.use_s2_act_attn and (self.use_gate_act or self.use_sep_s2_act):
+        if activation_type not in ("legacy_sep_s2", "so2_gate", "sep_s2", "s2", "gate"):
+            raise ValueError(f"Unknown activation_type {activation_type}")
+        self.activation_type = activation_type
+        if self.use_s2_act_attn and self.activation_type != "s2":
             raise NotImplementedError(
-                "use_s2_act_attn=True currently supports only non-gated S2 activation "
-                "in this fairchem tensor implementation."
+                "use_s2_act_attn=True requires activation_type='s2' (non-gated S2 "
+                "activation) in this fairchem tensor implementation."
             )
+        if s2_grid_resolution is not None and self.activation_type not in (
+            "sep_s2",
+            "s2",
+        ):
+            raise ValueError(
+                "s2_grid_resolution only applies to the grid activations "
+                f"'sep_s2'/'s2', not to {self.activation_type!r}."
+            )
+        self.s2_grid_resolution = s2_grid_resolution
 
         # === FAIRCHEM ADAPTATION: Edge channel setup ===
         # In fairchem, edge_channels_list comes from backbone config.
@@ -1582,9 +1611,9 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         extra_m0_output_channels = None
         if not self.use_s2_act_attn:
             extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
-            if self.use_gate_act:
+            if self.activation_type == "gate":
                 extra_m0_output_channels += max(self.lmax_list) * self.hidden_channels
-            elif self.use_sep_s2_act:
+            elif self.activation_type in ("legacy_sep_s2", "sep_s2", "so2_gate"):
                 extra_m0_output_channels += self.hidden_channels
 
         # === EBDM-origin: m-share-rad radial weighting path ===
@@ -1621,25 +1650,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             extra_m0_output_channels=extra_m0_output_channels,
         )
 
-        # === EBDM-origin: Activation layer selection ===
-        if self.use_gate_act:
-            self.gate_act = GateActivation(
-                lmax=max(self.lmax_list),
-                mmax=max(self.mmax_list),
-                num_channels=self.hidden_channels,
-            )
-        elif self.use_sep_s2_act:
-            self.s2_act = SeparableS2Activation(
-                lmax=max(self.lmax_list),
-                mmax=max(self.mmax_list),
-                SO3_grid=self.SO3_grid,
-            )
-        else:
-            self.s2_act = S2Activation(
-                lmax=max(self.lmax_list),
-                mmax=max(self.mmax_list),
-                SO3_grid=self.SO3_grid,
-            )
+        self.act = self._build_edge_frame_activation()
 
         self.so2_conv_2 = so2_convolution_class(
             self.hidden_channels,
@@ -1685,6 +1696,42 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 )
             else:
                 self.proj_nodes_2_extra = None
+
+    def _build_edge_frame_activation(self) -> nn.Module:
+        """Nonlinearity between the two SO(2) convolutions, on m-ordered coefficients.
+
+        The Wigner matrices from the backbone include ``to_m``, so the edge-frame
+        features are m-ordered -- unlike EBDM, whose SO(2) convolution converts back
+        to l-order before the activation. The activations therefore have to be the
+        ``_M`` / ``m_prime`` variants; the plain ones scramble the (l, m) components,
+        and the output then depends on the random roll of the edge frame.
+        """
+        lmax, mmax = max(self.lmax_list), max(self.mmax_list)
+        if self.activation_type == "legacy_sep_s2":
+            logging.warning(
+                "SO2 head uses activation_type='legacy_sep_s2': predictions depend on "
+                "the random roll of the edge frames (~0.03 kcal/mol mean, up to ~0.7 "
+                "per edge). Kept only to load checkpoints trained before the fix; "
+                "train new models with activation_type='so2_gate'."
+            )
+            return SeparableS2Activation(lmax, mmax, self.SO3_grid)
+        if self.activation_type == "so2_gate":
+            return SO2InvariantGatedActivation(lmax, mmax)
+        if self.activation_type == "gate":
+            return GateActivation(lmax, mmax, self.hidden_channels, m_prime=True)
+        grid = self.SO3_grid
+        if self.s2_grid_resolution is not None:
+            grid = nn.ModuleDict(
+                {
+                    "lmax_mmax": SO3_Grid(
+                        lmax, mmax, resolution=self.s2_grid_resolution, rescale=True
+                    )
+                }
+            )
+        to_m = self.mappingReduced.to_m
+        if self.activation_type == "sep_s2":
+            return SeparableS2Activation_M(lmax, mmax, grid, to_m)
+        return S2Activation_M(lmax, mmax, grid, to_m)
 
     @staticmethod
     def _squeeze_scalar_output(x: torch.Tensor) -> torch.Tensor:
@@ -1789,30 +1836,19 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         else:
             x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
 
-        # === EBDM-origin: Activation between SO(2) convolutions ===
-        # Three options: GateActivation, SeparableS2Activation, or standard S2Activation.
-        # All are SO(3) equivariant nonlinearities preserving spherical harmonic structure.
+        # === Activation between SO(2) convolutions (see _build_edge_frame_activation) ===
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
         if self.use_s2_act_attn:
-            x_message = self.s2_act(x_message)
-        elif self.use_gate_act:
+            x_message = self.act(x_message)
+        elif self.activation_type == "s2":
+            x_0_alpha = x_0_extra
+            x_message = self.act(x_message)
+        else:
             x_0_gating = x_0_extra.narrow(
                 1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels
             )
             x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-            x_message = self.gate_act(x_0_gating, x_message)
-        else:
-            if self.use_sep_s2_act:
-                x_0_gating = x_0_extra.narrow(
-                    1,
-                    x_alpha_num_channels,
-                    x_0_extra.shape[1] - x_alpha_num_channels,
-                )
-                x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-                x_message = self.s2_act(x_0_gating, x_message)
-            else:
-                x_0_alpha = x_0_extra
-                x_message = self.s2_act(x_message)
+            x_message = self.act(x_0_gating, x_message)
 
         # === EBDM-origin: Second SO(2) convolution ===
         # Project to num_heads * attn_value_channels for attention computation.
@@ -2124,118 +2160,14 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             )
 
     def forward(self, data, emb):
-        # reuse parent's forward up to x_nodes creation
-        # We'll copy-paste the necessary upstream logic to obtain `x_nodes`.
-        # For brevity and safety we call the parent forward but intercept the
-        # intermediate `x_nodes` by re-running the parts that compute it.
-
-        # Recompute rotations and message passing exactly as parent does
-        edge_index = emb["edge_index"]
-        node_embedding = emb["node_embedding"]
-        edge_embedding = emb["edge_embedding"]
-        edge_distance_vec = emb["edge_distance_vec"]
-
-        num_edges = edge_index.shape[1]
-        num_nodes = node_embedding.shape[0]
-
-        x_source = node_embedding[edge_index[0]]
-        x_target = node_embedding[edge_index[1]]
-        x_message_data = torch.cat((x_source, x_target), dim=2)
-
-        x_edge = edge_embedding.narrow(1, 0, self.edge_distance_channels)
-        if self.use_atom_edge_embedding:
-            source_element = data["atomic_numbers"][edge_index[0]]
-            target_element = data["atomic_numbers"][edge_index[1]]
-            source_embedding = self.source_embedding(source_element)
-            target_embedding = self.target_embedding(target_element)
-            x_edge = torch.cat((x_edge, source_embedding, target_embedding), dim=1)
-
-        wigner, wigner_inv = self.backbone._get_rotmat_and_wigner(
-            edge_distance_vec,
-            use_cuda_graph=self.backbone.use_cuda_graph_wigner
-            and "cuda" in get_device_for_local_rank()
-            and not self.training,
-        )
-        x_message = torch.bmm(wigner, x_message_data)
-
-        if self.use_m_share_rad:
-            x_edge_weight = self.rad_func(x_edge)
-            x_edge_weight = x_edge_weight.view(
-                -1,
-                (max(self.lmax_list) + 1),
-                2 * self.sphere_channels,
-            )
-            x_edge_weight = torch.index_select(
-                x_edge_weight,
-                dim=1,
-                index=self.expand_index,
-            )
-            x_message = x_message * x_edge_weight
-
-        if self.use_s2_act_attn:
-            x_message = self.so2_conv_1(x_message, x_edge)
-        else:
-            x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
-
-        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
-        if self.use_s2_act_attn:
-            x_message = self.s2_act(x_message)
-        elif self.use_gate_act:
-            x_0_gating = x_0_extra.narrow(
-                1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels
-            )
-            x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-            x_message = self.gate_act(x_0_gating, x_message)
-        else:
-            if self.use_sep_s2_act:
-                x_0_gating = x_0_extra.narrow(
-                    1,
-                    x_alpha_num_channels,
-                    x_0_extra.shape[1] - x_alpha_num_channels,
-                )
-                x_0_alpha = x_0_extra.narrow(1, 0, x_alpha_num_channels)
-                x_message = self.s2_act(x_0_gating, x_message)
-            else:
-                x_0_alpha = x_0_extra
-                x_message = self.s2_act(x_message)
-
-        if self.use_s2_act_attn:
-            x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
-        else:
-            x_message = self.so2_conv_2(x_message, x_edge)
-
-        if self.use_s2_act_attn:
-            alpha = x_0_extra
-        else:
-            x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
-            x_0_alpha = self.alpha_norm(x_0_alpha)
-            x_0_alpha = self.alpha_act(x_0_alpha)
-            alpha = torch.einsum("bik,ik->bi", x_0_alpha, self.alpha_dot)
-
-        alpha = torch_geometric.utils.softmax(alpha, edge_index[1])
-        alpha = alpha.view(alpha.shape[0], 1, self.num_heads, 1)
-        if self.alpha_dropout is not None:
-            alpha = self.alpha_dropout(alpha)
-
-        attn = x_message.view(
-            num_edges,
-            x_message.shape[1],
-            self.num_heads,
-            self.attn_value_channels,
-        )
-        attn = attn * alpha
-        x_message = attn.view(
-            num_edges,
-            attn.shape[1],
-            self.num_heads * self.attn_value_channels,
-        )
-
-        x_message = torch.bmm(wigner_inv, x_message)
+        x_message = self.compute_edge_messages(data, emb)
 
         outputs: dict[str, dict] = {}
 
         if self.edge_prediction and self.output_channels_edges > 0:
-            out_embedding_edges = self.proj_edges_2(self.proj_edges_1(x_message))
+            out_embedding_edges = _project_fp32(
+                x_message, self.proj_edges_1, self.proj_edges_2
+            )
             out_embedding_edges = out_embedding_edges.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
             )
@@ -2247,20 +2179,14 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
                 "edge_index": _predicted_edge_index(emb),
             }
 
-        # aggregate to nodes
-        x_nodes = torch_geometric.utils.scatter(
-            x_message,
-            edge_index[1],
-            dim=0,
-            dim_size=num_nodes,
-            reduce="sum",
-        )
+        x_nodes = self.aggregate_to_nodes(x_message, emb)
 
         # per-term projections (each term has its own two-layer stack)
         component_preds: list[torch.Tensor] = []
         for term in self.term_names:
-            proj_nodes = self.proj_nodes_1_terms[term](x_nodes)
-            out_embedding_nodes_term = self.proj_nodes_2_terms[term](proj_nodes)
+            out_embedding_nodes_term = _project_fp32(
+                x_nodes, self.proj_nodes_1_terms[term], self.proj_nodes_2_terms[term]
+            )
             out_embedding_nodes_term = out_embedding_nodes_term.narrow(
                 1, self.num_irreps_passed, 2 * self.out_degree + 1
             )
