@@ -9,6 +9,11 @@ import numpy as np
 import torch
 from ase.calculators.calculator import Calculator
 
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - tqdm is optional
+    tqdm = None
+
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.datasets.iqa_pkl_dataset import IQAPKLDataset
 from fairchem.core.datasets.atomic_data import AtomicData
@@ -60,6 +65,37 @@ def _get_graph_params(
     return radius, max_neigh
 
 
+
+
+def _get_dim(task: Any) -> int:
+    d = task.out_spec.get("dim", [1])
+    return d[0] if isinstance(d, (list, tuple)) and d else 1
+
+
+def _slice_by_property(
+    pred: dict[str, torch.Tensor],
+    tasks: list,
+    natoms: int,
+    nedges: int,
+) -> dict[str, torch.Tensor]:
+    tasks_by_prop: dict[str, list] = {}
+    for t in tasks:
+        tasks_by_prop.setdefault(t.property, []).append(t)
+
+    out: dict[str, torch.Tensor] = {}
+    for prop, group in tasks_by_prop.items():
+        full = pred.get(prop)
+        if full is None:
+            continue
+        offset = 0
+        for t in group:
+            count = natoms if t.level == "atom" else nedges
+            size = count * _get_dim(t)
+            out[t.name] = full[offset : offset + size]
+            offset += size
+    return out
+
+
 def _resolve_indices(
     dataset: IQAPKLDataset, input_path: Path, max_items: int | None
 ) -> list[int]:
@@ -86,6 +122,7 @@ def predict_iqa_pkl(
     input_path: str | Path,
     task_name: str | None = None,
     max_items: int | None = None,
+    atomic_charge_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Predict IQA atom- and edge-level energies for PKL inputs.
@@ -94,6 +131,8 @@ def predict_iqa_pkl(
         input_path: Directory with .pkl files or a single .pkl file.
         task_name: Dataset/task name from the checkpoint (e.g., iqa_pkl).
         max_items: Optional cap on number of structures to process.
+        atomic_charge_key: PKL key of the per-atom charges, required for models
+            trained with charge_conditioning='atomic' (e.g. 'q(A)').
 
     Returns:
         A dictionary ready to be serialized as JSON.
@@ -106,7 +145,9 @@ def predict_iqa_pkl(
     dataset_root = path if path.is_dir() else path.parent
     task_name = _get_task_name(predict_unit, task_name)
 
-    dataset = IQAPKLDataset(src=str(dataset_root), name=task_name)
+    dataset = IQAPKLDataset(
+        src=str(dataset_root), name=task_name, atomic_charge_key=atomic_charge_key
+    )
     indices = _resolve_indices(dataset, path, max_items)
 
     results = {
@@ -115,15 +156,21 @@ def predict_iqa_pkl(
         "structures": [],
     }
 
-    for idx in indices:
+    iterator = indices
+    if tqdm is not None:
+        iterator = tqdm(indices, desc="Predicting", unit="mol")
+
+    for idx in iterator:
         data = dataset[idx]
         batch = data_list_collater([data])
         pred = predict_unit.predict(batch)
 
-        predictions: dict[str, list[float]] = {}
-        for task in predict_unit.dataset_to_tasks[task_name]:
-            if task.property in pred:
-                predictions[task.name] = _to_list(pred[task.property])
+        natoms = int(data.natoms.item())
+        nedges = int(data.nedges.item())
+        sliced = _slice_by_property(
+            pred, predict_unit.dataset_to_tasks[task_name], natoms, nedges
+        )
+        predictions = {k: _to_list(v) for k, v in sliced.items()}
 
         entry = {
             "index": idx,
@@ -182,10 +229,12 @@ class IQACalculator(Calculator):
         batch = data_list_collater([data])
         pred = self.predictor.predict(batch)
 
-        self.results = {}
-        for task in self.predictor.dataset_to_tasks[self.task_name]:
-            if task.property in pred:
-                self.results[task.name] = pred[task.property].detach().cpu().numpy()
+        natoms = int(data.natoms.item())
+        nedges = int(data.nedges.item())
+        sliced = _slice_by_property(
+            pred, self.predictor.dataset_to_tasks[self.task_name], natoms, nedges
+        )
+        self.results = {k: v.detach().cpu().numpy() for k, v in sliced.items()}
 
         self.results["edge_index"] = data.edge_index.detach().cpu().t().numpy()
         self.results["atomic_numbers"] = data.atomic_numbers.detach().cpu().numpy()

@@ -1,0 +1,23 @@
+# Run 1: q(A) model conditioned on the total charge, with the q(A) sum constrained to
+# it, trained as 5-fold cross-validation over sum formulas. Launch one job per fold:
+#   fairchem -c configs/uma/training_release/iqa_charge_kfold.yaml fold=0   # ... fold=4
+# Each fold model trains on 4/5 of train and predicts the held-out 1/5
+# (scripts/iqa_kfold_predict_charges.py), giving out-of-fold charges with the error a
+# model has on unseen compositions. k=5: 80% of the data per model at 5x the cost.
+defaults:
+  - iqa_charge_pretrain
+  - _self_
+
+fold: ???
+num_folds: 5
+cutoff_radius: 4.0  # A
+
+job:
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-kfold${num_folds}-fold${fold}_totalchargecond_qsum_lagcut5e-4_otf_300neighbors_4A_40h
+
+dataset:
+  iqa_train:
+    # sum-formula grouped folds from scripts/iqa_kfold_assign.py
+    fold_file: ${cluster.data_root_dir}/kfold${num_folds}_sumformula.csv
+    exclude_folds:
+      - ${fold}
