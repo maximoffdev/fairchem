@@ -1,0 +1,75 @@
+# IQA intra/inter decomposition with the atomic charges q(A) predicted alongside.
+# E_inter(A,B)/2 is learned as the residual to the Coulomb term of the model's own
+# predicted charges, q_A q_B / 2R, so the long-range part reaches pairs at any
+# distance (see PredictedChargeEdgeReferences). Same tasks as iqa_decompose_intra_inter
+# otherwise.
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_intra_a
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_intra}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_intra_a_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_intra_a}
+    rmsd: ${normalizer_rmsd_iqa_intra_a}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_inter_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  # learn the residual to q_A q_B / 2R of the predicted charges (task iqa_charge)
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.PredictedChargeEdgeReferences
+    charge_task: iqa_charge
+    charge_property: pred
+    detach_charges: ${detach_predicted_charges}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_inter_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+# Atomic charge q(A), in electrons. Identity normalizer: the charges feed the inter
+# baseline above and the head's conserve_total_charge shift, both in e.
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_charge
+  level: atom
+  property: pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_charge_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: 0.0
+    rmsd: 1.0
+  out_spec:
+    dim: [1]
+    dtype: float32
+  metrics:
+    - mae

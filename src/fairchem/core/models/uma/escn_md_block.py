@@ -38,6 +38,28 @@ def set_mole_ac_start_index(module: nn.Module, index: int) -> None:
             submodule.global_mole_tensors.ac_start_idx = index
 
 
+def edge_envelope(edge_distance: torch.Tensor, cutoff: float) -> torch.Tensor:
+    """(E,) smooth cutoff weight of each edge, 1 at r=0 and 0 at the cutoff."""
+    return PolynomialEnvelope(exponent=5)(edge_distance / cutoff)
+
+
+def smooth_degree(
+    edge_distance: torch.Tensor,
+    target_index: torch.Tensor,
+    num_nodes: int,
+    cutoff: float,
+) -> torch.Tensor:
+    """(N,) neighbour count sum_j envelope(r_ij / cutoff) of each target node.
+
+    Smooth in the positions (each neighbour fades in at the cutoff), so normalizing
+    by it keeps energies continuous when atoms cross the cutoff.
+    """
+    env = edge_envelope(edge_distance, cutoff)
+    return torch.zeros(num_nodes, dtype=env.dtype, device=env.device).index_add(
+        0, target_index, env
+    )
+
+
 class Edgewise(torch.nn.Module):
     def __init__(
         self,
@@ -125,7 +147,10 @@ class Edgewise(torch.nn.Module):
         wigner_and_M_mapping,
         wigner_and_M_mapping_inv,
         node_offset: int = 0,
+        x_source_nodes: torch.Tensor | None = None,
     ):
+        """``x_source_nodes``: features read on the neighbour (source) side of each
+        edge instead of ``x``; the strictly local mode passes fixed species features."""
         if self.activation_checkpoint_chunk_size is None:
             return self.forward_chunk(
                 x,
@@ -135,6 +160,7 @@ class Edgewise(torch.nn.Module):
                 wigner_and_M_mapping,
                 wigner_and_M_mapping_inv,
                 node_offset,
+                x_source_nodes=x_source_nodes,
             )
         edge_index_partitions = edge_index.split(
             self.activation_checkpoint_chunk_size, dim=1
@@ -165,6 +191,7 @@ class Edgewise(torch.nn.Module):
                     wigner_inv_partitions[idx],
                     node_offset,
                     ac_mole_start_idx,
+                    x_source_nodes,
                     use_reentrant=False,
                 )
             )
@@ -184,17 +211,26 @@ class Edgewise(torch.nn.Module):
         wigner_and_M_mapping_inv,
         node_offset: int = 0,
         ac_mole_start_idx: int = 0,
+        x_source_nodes: torch.Tensor | None = None,
     ):
         # here we need to update the ac_start_idx of the mole layers under here for this chunking to
         # work properly with MoLE together
         set_mole_ac_start_index(self, ac_mole_start_idx)
 
+        source_nodes = x if x_source_nodes is None else x_source_nodes
         if gp_utils.initialized():
             x_full = gp_utils.gather_from_model_parallel_region_sum_grad(x, dim=0)
-            x_source = x_full[edge_index[0]]
+            source_full = (
+                x_full
+                if x_source_nodes is None
+                else gp_utils.gather_from_model_parallel_region_sum_grad(
+                    source_nodes, dim=0
+                )
+            )
+            x_source = source_full[edge_index[0]]
             x_target = x_full[edge_index[1]]
         else:
-            x_source = x[edge_index[0]]
+            x_source = source_nodes[edge_index[0]]
             x_target = x[edge_index[1]]
 
         x_message = torch.cat((x_source, x_target), dim=2)
@@ -379,12 +415,23 @@ class eSCNMD_Block(torch.nn.Module):
         wigner_and_M_mapping_inv,
         sys_node_embedding=None,
         node_offset: int = 0,
+        x_source: torch.Tensor | None = None,
+        node_scale: torch.Tensor | None = None,
     ):
+        """``x_source``: fixed neighbour-side features (strictly local mode), normalized
+        like ``x``. ``node_scale``: (N,) factor on each node's summed messages, e.g.
+        1/sqrt(degree); None keeps the plain sum."""
         x_res = x
         x = self.norm_1(x)
 
         if sys_node_embedding is not None:
             x[:, 0, :] = x[:, 0, :] + sys_node_embedding
+
+        x_source_nodes = None
+        if x_source is not None:
+            x_source_nodes = self.norm_1(x_source)
+            if sys_node_embedding is not None:
+                x_source_nodes[:, 0, :] = x_source_nodes[:, 0, :] + sys_node_embedding
 
         with record_function("edgewise"):
             x = self.edge_wise(
@@ -395,7 +442,10 @@ class eSCNMD_Block(torch.nn.Module):
                 wigner_and_M_mapping,
                 wigner_and_M_mapping_inv,
                 node_offset,
+                x_source_nodes=x_source_nodes,
             )
+            if node_scale is not None:
+                x = x * node_scale.view(-1, 1, 1).to(x.dtype)
             x = x + x_res
 
         x_res = x

@@ -1,0 +1,39 @@
+# TU Dresden alpha partition: 8x A100-SXM4-40GB, 48 CPUs, 990 GB per node.
+# Model-relevant values match leipzig_cluster. train/val are staged per run to
+# node-local NVMe, so jobs sharing a node never share (and race on) a metadata.npz.
+data_root_dir: /tmp/${oc.env:USER}_iqa_${job.run_name}
+original_data_root_dir: /data/horse/ws/maho053h-iqa-training/sumformulasplit
+# Copying the ~120k small pkls from horse takes > 20 min, one archive ~20 s. The archive
+# also carries train/ and val/metadata.npz: building them unpickles every pkl (~10 min).
+# Rebuild after changing the splits (<metadata_dir> holds the metadata.npz files that
+# a staged job built in data_root_dir after one run with the new archive):
+#   tar --exclude=metadata.npz -cf <data_tar> -C <original_data_root_dir> train val
+#   tar -rf <data_tar> -C <metadata_dir> train/metadata.npz val/metadata.npz
+data_tar: ${cluster.original_data_root_dir}_trainval.tar
+run_dir: /data/horse/ws/maho053h-iqa-training/iqa
+account: null
+qos: null
+mode: SLURM
+device: CUDA
+ranks_per_node: 2
+# With 0, loading took ~1/3 of each 8 A K4L2 step (0.72 step/s, 18 % GPU utilisation).
+dataloader_workers: 4
+debug: false
+# Not 0 ("whole node"): 2-4 GPU jobs must leave memory for the others on the node.
+mem_gb: 120
+cpus_per_task: 6
+timeout_hr: "14"
+partition: alpha
+max_atoms: 900
+max_neighbors: 300
+num_moe_experts: 1
+cutoff_radius: 6.0
+# Run in the sbatch script before srun. The metadata cache is checked (and rebuilt if it
+# misses files) here once, because the DDP ranks would otherwise all write it at once.
+setup_commands:
+  - "trap 'rm -rf \"${cluster.data_root_dir}\"' EXIT"
+  - "mkdir -p \"${cluster.data_root_dir}\" || exit 1"
+  - "for split in train val; do [ \"${cluster.data_tar}\" -nt \"${cluster.original_data_root_dir}/$split\" ] || { echo \"${cluster.data_tar} is older than ${cluster.original_data_root_dir}/$split, rebuild it\" >&2; exit 1; }; done"
+  - "tar -xf \"${cluster.data_tar}\" -C \"${cluster.data_root_dir}\" || exit 1"
+  - "python -c \"from fairchem.core.datasets.iqa_pkl_dataset import IQAPKLDataset; [IQAPKLDataset(src).metadata for src in ('${cluster.data_root_dir}/train', '${cluster.data_root_dir}/val')]\" || exit 1"
+  - "echo \"data staged: $(date -Is)\" >&2"

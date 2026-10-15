@@ -18,11 +18,17 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from fairchem.core.datasets.atomic_data import AtomicData, atomicdata_list_to_batch
+from fairchem.core.modules.iqa_coulomb import point_charge_pair_energy
 
 from ._load_utils import _load_from_config
 
 
-class ElementReferences(nn.Module):
+class TaskReferences(nn.Module):
+    """Common base of per-task label references. A single class is needed for
+    the ``Task.element_references`` annotation: OmegaConf rejects unions of classes."""
+
+
+class ElementReferences(TaskReferences):
     def __init__(
         self,
         element_references: torch.Tensor,
@@ -76,6 +82,178 @@ class ElementReferences(nn.Module):
             self.element_references,
             operation="add",
         )
+
+
+class AtomElementReferences(TaskReferences):
+    """Per-atom element references — subtracts a fixed per-element scalar from
+    each atom's target value before computing the loss, and adds it back at
+    inference.  Unlike ElementReferences (which sums refs over all atoms in a
+    structure to produce a single system-level offset), this class operates
+    directly on per-atom tensors of shape [N_atoms], performing a simple
+    element-wise lookup without any scatter-reduce.
+
+    Typical use: normalise per-atom IQA intra-atomic energies
+    E_IQA_Intra(A) by subtracting the corresponding isolated-atom reference
+    energy r_{Z_i}, so the model learns only the small bonding residual
+    δ_i = E_IQA_Intra(A_i) - r_{Z_i}.
+    """
+
+    def __init__(self, element_references: torch.Tensor):
+        """
+        Args:
+            element_references: 1-D tensor of length ≥ 119 where index Z holds
+                the reference value (in the same units as the training labels)
+                for atomic number Z.  Unused elements should be 0.0.
+        """
+        super().__init__()
+        self.register_buffer("element_references", element_references)
+
+    def _lookup(self, batch: AtomicData) -> torch.Tensor:
+        return self.element_references[batch.atomic_numbers_full]
+
+    # Refs are O(1e4) eV while the residuals are O(1) eV: add/subtract in float64 so
+    # only the result is rounded to the tensor dtype, not the reference as well.
+    def apply_refs(self, batch: AtomicData, tensor: torch.Tensor) -> torch.Tensor:
+        """Subtract per-atom reference from target labels before loss."""
+        with torch.autocast(self.element_references.device.type, enabled=False):
+            refs = self._lookup(batch).double()
+            return (tensor.double() - refs.view_as(tensor)).to(tensor.dtype)
+
+    def undo_refs(self, batch: AtomicData, tensor: torch.Tensor) -> torch.Tensor:
+        """Add per-atom reference back to model predictions at inference."""
+        with torch.autocast(self.element_references.device.type, enabled=False):
+            refs = self._lookup(batch).double()
+            return (tensor.double() + refs.view_as(tensor)).to(tensor.dtype)
+
+
+class PointChargeEdgeReferences(TaskReferences):
+    """Per-edge Coulomb baseline ``sign * c_A * c_B / (2 R_AB)`` for IQA pair labels.
+
+    Subclasses choose the point charges c. Edge tensors are laid out on
+    ``edge_index``, passed explicitly because the model graph can differ from the
+    dataset's; ``predictions`` (the model outputs) is passed for charges the model
+    predicts itself.
+    """
+
+    def __init__(self, sign: int, pair_scale: float = 0.5, output_in_ev: bool = True):
+        super().__init__()
+        if sign not in (-1, 1):
+            raise ValueError(f"sign must be -1 or +1, got {sign}")
+        self.sign = sign
+        self.pair_scale = pair_scale
+        self.output_in_ev = output_in_ev
+
+    def charges(
+        self, batch: AtomicData, predictions: dict[str, dict[str, torch.Tensor]]
+    ) -> torch.Tensor:
+        """(N,) point charge per atom."""
+        raise NotImplementedError
+
+    def baseline(
+        self,
+        batch: AtomicData,
+        edge_index: torch.Tensor,
+        predictions: dict[str, dict[str, torch.Tensor]],
+    ) -> torch.Tensor:
+        """(E,) float64 baseline for the directed edges ``edge_index``."""
+        if bool(batch.pbc.any()):
+            raise ValueError(
+                f"{type(self).__name__} needs aperiodic systems: the edge distance is "
+                "taken from positions without cell offsets."
+            )
+        src, dst = edge_index
+        with torch.autocast(batch.pos.device.type, enabled=False):
+            pos = batch.pos.double()
+            distance = torch.linalg.norm(pos[src] - pos[dst], dim=-1)
+            c = self.charges(batch, predictions).double()
+            return self.sign * point_charge_pair_energy(
+                c[src], c[dst], distance, self.pair_scale, self.output_in_ev
+            )
+
+    def apply_refs(
+        self,
+        batch: AtomicData,
+        tensor: torch.Tensor,
+        edge_index: torch.Tensor,
+        predictions: dict[str, dict[str, torch.Tensor]],
+    ) -> torch.Tensor:
+        """Subtract the baseline from edge labels before loss."""
+        refs = self.baseline(batch, edge_index, predictions)
+        return (tensor.double() - refs.view_as(tensor)).to(tensor.dtype)
+
+    def undo_refs(
+        self,
+        batch: AtomicData,
+        tensor: torch.Tensor,
+        edge_index: torch.Tensor,
+        predictions: dict[str, dict[str, torch.Tensor]],
+    ) -> torch.Tensor:
+        """Add the baseline back to edge predictions."""
+        refs = self.baseline(batch, edge_index, predictions)
+        return (tensor.double() + refs.view_as(tensor)).to(tensor.dtype)
+
+
+class NeutralPointChargeEdgeReferences(PointChargeEdgeReferences):
+    """Neutral-atom baseline ``sign * Z_A * Z_B / (2 R_AB)``.
+
+    The IQA pair subterms are dominated by the Coulomb interaction of the bare
+    nuclear charges: V_ne(A,B), V_en(A,B) ~ -Z_A Z_B / R and V_ee(A,B) ~ +Z_A Z_B / R
+    (per directed edge halved, like the labels). Subtracting it shrinks the label
+    spread ~6x and the four baselines (with the exact V_nn) cancel identically in
+    E_inter, so the model only learns the charge-transfer / penetration residual.
+    The baseline is symmetric in A <-> B, so it does not depend on which end of the
+    edge carries the nucleus.
+    """
+
+    def charges(
+        self, batch: AtomicData, predictions: dict[str, dict[str, torch.Tensor]]
+    ) -> torch.Tensor:
+        return batch.atomic_numbers
+
+
+class PredictedChargeEdgeReferences(PointChargeEdgeReferences):
+    """Baseline ``q_A q_B / (2 R_AB)`` from the atomic charges the model predicts.
+
+    For E_inter(A,B)/2, whose long-range part is the Coulomb interaction of the
+    atomic charges: the model learns the short-range residual, while the analytic
+    term covers pairs at any distance. The charges are read from the model output
+    ``predictions[charge_task][charge_property]``, which must be in e: the charge task
+    needs an identity normalizer and no references. Training and inference use the
+    same predicted charges, so there is no train/inference mismatch.
+
+    ``detach_charges=True`` keeps the energy loss from pulling the charges away from
+    their own (AIM) labels. Then no warm-up is needed: a charge head conserving the
+    total charge starts near q = Q/N, so the baseline starts near zero and grows in
+    as the charges are learned.
+    """
+
+    def __init__(
+        self,
+        charge_task: str,
+        charge_property: str = "pred",
+        detach_charges: bool = True,
+        pair_scale: float = 0.5,
+        output_in_ev: bool = True,
+    ):
+        super().__init__(1, pair_scale, output_in_ev)
+        self.charge_task = charge_task
+        self.charge_property = charge_property
+        self.detach_charges = detach_charges
+
+    def charges(
+        self, batch: AtomicData, predictions: dict[str, dict[str, torch.Tensor]]
+    ) -> torch.Tensor:
+        if self.charge_task not in predictions:
+            raise KeyError(
+                f"PredictedChargeEdgeReferences needs the '{self.charge_task}' "
+                f"prediction; model outputs: {sorted(predictions)}"
+            )
+        q = predictions[self.charge_task][self.charge_property].reshape(-1)
+        if q.shape[0] != batch.pos.shape[0]:
+            raise ValueError(
+                f"'{self.charge_task}' has {q.shape[0]} values for {batch.pos.shape[0]} atoms"
+            )
+        return q.detach() if self.detach_charges else q
 
 
 class LinearReferences(nn.Module):

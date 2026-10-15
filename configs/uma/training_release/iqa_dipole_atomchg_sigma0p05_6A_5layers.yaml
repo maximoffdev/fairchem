@@ -1,0 +1,11 @@
+# The pipeline dipole model (iqa_dipole_atomchg_sigma0p05_6A) with one more backbone
+# layer (5 instead of 4). See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_dipole_atomchg_sigma0p05_6A
+  - _self_
+
+job:
+  run_name: dipole-atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_6A_5layers_40h
+
+backbone:
+  num_layers: 5
