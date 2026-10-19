@@ -58,7 +58,7 @@ is not meant to be rerun. It pins two settings that the repo has changed since:
   9 October.
 
 Apart from the intended change, runs 7 and 8 differ from the original only in cluster
-resources: 2 GPUs at 900 atoms instead of 4 GPUs at 450 atoms, the same global batch.
+resources: 2 GPUs at 1600 atoms instead of 4 GPUs at 450 atoms (see Submitting).
 
 - Run 7 sets `num_layers: 5`.
 - Run 8 sets `lmax: 3` and keeps mmax at 2, as the larger UMA backbones do. That
@@ -91,12 +91,15 @@ for cfg in iqa_intra_inter_atomchg_so2gate_6A iqa_intra_inter_atomchg_so2gate_8A
            iqa_subterms_atomchg_so2gate_6A iqa_subterms_atomchg_so2gate_8A \
            iqa_dipole_atomchg_sigma0p05_6A_5layers iqa_dipole_atomchg_sigma0p05_6A_lmax3; do
   fairchem -c configs/uma/training_release/$cfg.yaml cluster=dresden_alpha \
-    cluster.timeout_hr=40 cluster.max_atoms=900
+    cluster.timeout_hr=40 cluster.max_atoms=1600
 done
 ```
 
-These are the overrides the original Dresden runs were submitted with. Each run takes 2
-GPUs.
+Each run takes 2 GPUs. The original Dresden runs used `max_atoms=900` (2 x 900 = 4 x 450,
+the Leipzig global batch). These reruns use 1600 atoms per GPU, so the global batch is
+3200 instead of 1800 atoms at the same learning rate, and `epochs: 300` gives about 0.56x
+as many optimizer steps as the originals. Submitted on 2026-10-15 as Slurm jobs
+2370165 to 2370172 in the loop's order (run 4 is 2370167, run 3 is 2370168).
 
 ## After submitting
 

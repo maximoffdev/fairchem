@@ -121,6 +121,44 @@ def filter_inference_only_tasks(tasks: Sequence[Task]) -> list[Task]:
     return [task for task in tasks if not task.inference_only]
 
 
+def prefix_shared_module_keys(
+    model: torch.nn.Module, model_state_dict: dict[str, Any]
+) -> None:
+    """Rename the keys of shared modules' second paths to the DDP-wrapped names, in place.
+
+    Checkpoints store keys without the DDP "module." prefixes. torch's set_state_dict
+    (2.6) adds them back but visits every module only once, so the keys of a module
+    reachable under a second path (the backbone that IQA heads hold) keep their
+    prefix-free names and strict loading fails.
+    """
+    seen: set[int] = set()
+    alias_module_names: set[str] = set()
+    for name, module in model.named_modules(remove_duplicate=False):
+        if id(module) in seen:
+            alias_module_names.add(name)
+        seen.add(id(module))
+    for key in model.state_dict():
+        module_name, _, leaf = key.rpartition(".")
+        if module_name not in alias_module_names:
+            continue
+        saved_key = ".".join([*_ddp_free_module_path(model, module_name), leaf])
+        if saved_key != key:
+            model_state_dict[key] = model_state_dict.pop(saved_key)
+
+
+def _ddp_free_module_path(model: torch.nn.Module, module_name: str) -> list[str]:
+    path: list[str] = []
+    module = model
+    for part in module_name.split("."):
+        if not (
+            isinstance(module, torch.nn.parallel.DistributedDataParallel)
+            and part == "module"
+        ):
+            path.append(part)
+        module = module.get_submodule(part)
+    return path
+
+
 def convert_train_checkpoint_to_inference_checkpoint(
     dcp_checkpoint_loc: str, checkpoint_loc: str
 ) -> None:
@@ -932,6 +970,7 @@ class MLIPTrainEvalUnit(
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         # sets our state dicts on the model and optimizer, now that we've loaded
+        prefix_shared_module_keys(self.model, state_dict["model"])
         set_state_dict(
             self.model,
             self.optimizer,
@@ -941,6 +980,7 @@ class MLIPTrainEvalUnit(
         self.train_progress.load_state_dict(state_dict["progress"])
         self.scheduler.load_state_dict(state_dict["scheduler"])
         if self.ema_model is not None:
+            prefix_shared_module_keys(self.ema_model, state_dict["ema"])
             set_model_state_dict(
                 self.ema_model,
                 model_state_dict=state_dict["ema"],
