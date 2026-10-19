@@ -1,0 +1,10 @@
+# iqa_subterms_atomchg_so2gate_8A at a 6 A cutoff, the subterms counterpart of
+# iqa_intra_inter_atomchg_so2gate_6A. See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_subterms_atomchg_so2gate_8A
+  - _self_
+
+job:
+  run_name: le-subterms_sharedtrunk_so2gate_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_6A_40h
+
+cutoff_radius: 6.0  # A; otf graph and radial basis cutoff

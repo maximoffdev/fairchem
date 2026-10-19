@@ -1,0 +1,12 @@
+# Rerun of le-1-1-mean_and_rmsd_norm_all_train-with_ref_atomchargecond_sigma0.02_
+# lagcut5e-4_otf_300neighbors_6A_24h with the exactly roll-equivariant SO(2) head
+# activation: the 8 A rerun at a 6 A cutoff (the original 6 A model's config equals
+# the 8 A one apart from the cutoff). See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_intra_inter_atomchg_so2gate_8A
+  - _self_
+
+job:
+  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref_so2gate_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_6A_40h
+
+cutoff_radius: 6.0  # A; otf graph and radial basis cutoff

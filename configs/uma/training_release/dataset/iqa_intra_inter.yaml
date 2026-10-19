@@ -1,0 +1,73 @@
+# Same as iqa_components.yaml, minus the dipole labels.
+#
+# One training pkl ([OM25]_mol_3930732.pkl) is missing Mu_Intra(A) while all other
+# 118976 do have it. IQAPKLDataset maps labels per file, so that sample came out
+# without `dipole_intra` and atomicdata_list_to_batch() -- which reads the key set off
+# the first sample of the batch only -- died with
+#   AttributeError: 'AtomicData' object has no attribute 'dipole_intra'
+# The intra/inter task (tasks/iqa_decompose_intra_inter.yaml) never consumes the
+# dipole labels, so they are dropped here. Dipole runs keep using iqa_components.yaml.
+# Since 2026-10-09 that pkl is moved to sumformulasplit/excluded_missing_dipole/.
+iqa_train:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/train
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # Charge conditioning: total molecular charge -> AtomicData.charge -> backbone.
+  # To condition on per-atom charges instead, replace this with
+  # `atomic_charge_key: q(A)` (in iqa_val too) and set
+  # `backbone.charge_conditioning: atomic` in the experiment config.
+  charge_key: q_total
+  # Std (e) of zero-mean Gaussian noise on the atomic charge input (train only, needs
+  # atomic_charge_key). 0.02 is a good value: about the error of predicted
+  # charges, well below chemically meaningful charge differences (~0.1 e).
+  sigma_atomic_charge: 0.0
+  # Mask atoms with |L(A)| > lagrangian_cutoff (a.u., AIM integration error) and all
+  # edges touching them: their atom/edge labels become NaN and drop out of the loss.
+  # System labels (e_total) are kept. null disables the masking.
+  lagrangian_cutoff: 5.0e-4
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2
+
+iqa_val:
+  _target_: fairchem.core.datasets.iqa_pkl_dataset.IQAPKLDataset
+  src: ${cluster.data_root_dir}/val
+  name: ${dataset_list[0]}
+  ht2ev: true
+  # See iqa_train above.
+  charge_key: q_total
+  # Off for validation, so val metrics cover all atoms; set it to the iqa_train value
+  # to evaluate on well-integrated atoms only.
+  lagrangian_cutoff: null
+  key_mapping:
+    energy: e_total
+    iqa_kinetic: T(A)
+    iqa_vne: Vne(A,A)
+    iqa_vee: Vee(A,A)
+    iqa_vee_c: VeeC(A,A)
+    iqa_vee_x: VeeX(A,A)
+    iqa_intra_a: E_IQA_Intra(A)
+    iqa_inter_a: E_IQA_Inter(A)
+    iqa_inter_ab: E_IQA_Inter(A,B)/2
+    iqa_forces_direct: Fn(A,SumB)
+    iqa_forces_grad: Fn(A,SumB)
+    # Edge-level pairwise IQA subterms (halved for directed graph)
+    iqa_vne_ab: Vne(A,B)/2
+    iqa_vee_ab: Vee(A,B)/2
+    iqa_ven_ab: Ven(A,B)/2
+    iqa_vnn_ab: Vnn(A,B)/2

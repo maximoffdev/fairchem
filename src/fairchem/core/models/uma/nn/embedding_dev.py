@@ -160,7 +160,7 @@ class ChgSpinEmbedding(nn.Module):
     def __init__(
         self,
         embedding_type: Literal["pos_emb", "lin_emb", "rand_emb"],
-        embedding_target: Literal["charge", "spin"],
+        embedding_target: Literal["charge", "spin", "atomic_charge"],
         embedding_size: int,
         grad: bool,
         scale: float = 1.0,
@@ -168,7 +168,7 @@ class ChgSpinEmbedding(nn.Module):
         super().__init__()
         assert embedding_type in ["pos_emb", "lin_emb", "rand_emb"]
         self.embedding_type = embedding_type
-        assert embedding_target in ["charge", "spin"]
+        assert embedding_target in ["charge", "spin", "atomic_charge"]
         self.embedding_target = embedding_target
         assert embedding_size % 2 == 0, f"{embedding_size=} must be even"
 
@@ -178,6 +178,11 @@ class ChgSpinEmbedding(nn.Module):
         elif self.embedding_target == "spin":
             # 100 is a conservative upper bound
             self.target_dict = {str(x): x for x in range(101)}
+        elif self.embedding_type == "rand_emb":
+            # atomic charges are continuous, a lookup table cannot represent them
+            raise ValueError(
+                "rand_emb is not supported for atomic_charge, use pos_emb or lin_emb"
+            )
 
         if self.embedding_type == "pos_emb":
             # dividing by 2 because x_proj multiplies by 2
@@ -208,7 +213,7 @@ class ChgSpinEmbedding(nn.Module):
         # charge is default 0
         if self.embedding_type == "pos_emb":
             x_proj = x[:, None] * self.W[None, :] * 2 * torch.pi
-            if self.embedding_target == "charge":
+            if self.embedding_target in ("charge", "atomic_charge"):
                 return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
             elif self.embedding_target == "spin":
                 zero_idxs = torch.where(x == 0)[0]

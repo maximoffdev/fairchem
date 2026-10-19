@@ -1,0 +1,17 @@
+# The intra/inter rerun iqa_intra_inter_atomchg_so2gate_8A trained on the subterms
+# instead: same K4L2 backbone (not strictly local), sigma 0.02, Lagrangian cutoff,
+# optimizer and batch; subterm tasks with the point-charge edge baselines and the
+# refit normalizers of iqa_subterms_atomchg_pretrain; shared-trunk head with softmax
+# attention and the exactly equivariant activation. See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_subterms_atomchg_pretrain
+  - _self_
+
+job:
+  run_name: le-subterms_sharedtrunk_so2gate_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+
+cutoff_radius: 8.0  # A; otf graph and radial basis cutoff
+
+heads:
+  iqa_subterms_head:
+    activation_type: so2_gate

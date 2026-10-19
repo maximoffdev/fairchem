@@ -1,0 +1,12 @@
+# K4L2_light shrunk to 2 layers x 48 channels (lmax 2) for the q(A)-only models:
+# ~0.50 M parameters with the charge head, 5.5x fewer than K4L2_light. Bigger
+# backbones gave no better val charges (dipole+q, 128 ch x 4 layers: 0.0032 vs
+# 0.0033 e MAE), and two 9 A message-passing layers still span the molecules.
+defaults:
+  - K4L2_light
+  - _self_
+
+sphere_channels: 48
+edge_channels: 48
+hidden_channels: 48
+num_layers: 2

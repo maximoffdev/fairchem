@@ -81,11 +81,7 @@ class eSCNMDMoeBackbone(eSCNMDBackbone, MOLEInterface):
         if self.num_experts == 0:
             return self
         data["atomic_numbers"] = data["atomic_numbers"].long()
-        csd_mixed_emb = self.csd_embedding(
-            charge=data["charge"],
-            spin=data["spin"],
-            dataset=data["dataset"],
-        )
+        csd_mixed_emb, _ = self.csd_embedding(data)
         self.set_MOLE_coefficients(
             atomic_numbers_full=data["atomic_numbers"],
             batch_full=data["batch"],
