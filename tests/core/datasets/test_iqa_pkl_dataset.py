@@ -134,6 +134,65 @@ def test_lagrangian_cutoff_masks_atoms_and_their_edges(tmp_path: Path) -> None:
     assert torch.isfinite(data.iqa_vnn_ab).tolist() == [True, True, False, False]
 
 
+RATIO_KEY_MAPPING = {
+    "iqa_kinetic_frac": ["T(A)", "E_IQA_Intra(A)"],
+    "iqa_vnn_ab_frac": ["Vnn(A,B)/2", "Vnn(A,B)/2"],
+}
+
+
+def _write_ratio_pkl(root: Path, e_intra: list[float]) -> None:
+    _write_labeled_pkl(root, [1e-5, -2e-4, -8e-4])
+    with open(root / "sample.pkl", "rb") as f:
+        sample = pickle.load(f)
+    sample["E_IQA_Intra(A)"] = np.array(e_intra).reshape(-1, 1)
+    with open(root / "sample.pkl", "wb") as f:
+        pickle.dump(sample, f)
+
+
+def test_ratio_labels_are_unconverted_and_masked(tmp_path: Path) -> None:
+    _write_ratio_pkl(tmp_path, [-75.0, -0.25, -0.5])
+    data = IQAPKLDataset(
+        src=str(tmp_path),
+        key_mapping={"iqa_kinetic": "T(A)"},
+        ratio_key_mapping=RATIO_KEY_MAPPING,
+        lagrangian_cutoff=5e-4,
+    )[0]
+    torch.testing.assert_close(
+        data.iqa_kinetic_frac[:2], torch.tensor([-1.0, -2.0], dtype=data.pos.dtype)
+    )
+    assert torch.isfinite(data.iqa_kinetic_frac).tolist() == [True, True, False]
+    assert torch.isfinite(data.iqa_vnn_ab_frac).tolist() == [True, True, False, False]
+    # the plain label next to it is still converted to eV
+    assert data.iqa_kinetic[0] == pytest.approx(75.0 * 27.211386245988)
+
+
+def test_ratio_label_with_zero_denominator_raises(tmp_path: Path) -> None:
+    _write_ratio_pkl(tmp_path, [-75.0, 0.0, -0.5])
+    dataset = IQAPKLDataset(src=str(tmp_path), ratio_key_mapping=RATIO_KEY_MAPPING)
+    with pytest.raises(ValueError, match="zeros"):
+        dataset[0]
+
+
+@pytest.mark.parametrize(
+    ("ratio_key_mapping", "match"),
+    [
+        ({"x": ["T(A)", "Vnn(A,B)/2"]}, "atom label"),
+        ({"x": ["T(A)"]}, "numerator, denominator"),
+        ({"iqa_kinetic": ["T(A)", "E_IQA_Intra(A)"]}, "both"),
+    ],
+)
+def test_invalid_ratio_key_mapping_raises(
+    tmp_path: Path, ratio_key_mapping: dict[str, list[str]], match: str
+) -> None:
+    _write_ratio_pkl(tmp_path, [-75.0, -0.25, -0.5])
+    with pytest.raises(ValueError, match=match):
+        IQAPKLDataset(
+            src=str(tmp_path),
+            key_mapping={"iqa_kinetic": "T(A)"},
+            ratio_key_mapping=ratio_key_mapping,
+        )
+
+
 def test_lagrangian_cutoff_none_keeps_all_labels(tmp_path: Path) -> None:
     _write_labeled_pkl(tmp_path, [1e-5, -2e-4, -8e-4])
     data = IQAPKLDataset(src=str(tmp_path), key_mapping=LAGRANGIAN_KEY_MAPPING)[0]

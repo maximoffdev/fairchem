@@ -39,7 +39,7 @@ from ase.data import chemical_symbols
 # 1 Hartree = 27.211386245988 eV  (matches fairchem.core.datasets.iqa_pkl_dataset)
 HARTREE_TO_EV = 27.211386245988
 
-# The 5 IQA energy terms (pkl keys) referenced by the training config
+# The IQA energy terms (pkl keys) referenced by the training config
 # configs/uma/training_release/dataset/iqa_components.yaml
 DEFAULT_TERMS = [
     "e_total",
@@ -47,7 +47,18 @@ DEFAULT_TERMS = [
     "Vne(A,A)",
     "Vee(A,A)",
     "E_IQA_Intra(A)",
+    "VeeC(A,A)",
+    "VeeX(A,A)",
 ]
+
+# Dimensionless ratio terms {name: (numerator, denominator)}: the fractions of
+# E_IQA_Intra(A) predicted by tasks/iqa_decompose_subterm_fractions.yaml.
+DEFAULT_RATIOS: dict[str, tuple[str, str]] = {
+    "iqa_kinetic_frac": ("T(A)", "E_IQA_Intra(A)"),
+    "iqa_vne_frac": ("Vne(A,A)", "E_IQA_Intra(A)"),
+    "iqa_vee_c_frac": ("VeeC(A,A)", "E_IQA_Intra(A)"),
+    "iqa_vee_x_frac": ("VeeX(A,A)", "E_IQA_Intra(A)"),
+}
 
 # Map known pkl keys to clean YAML block names (matches the config's output keys).
 TERM_TO_REFNAME = {
@@ -56,6 +67,8 @@ TERM_TO_REFNAME = {
     "Vne(A,A)": "iqa_vne",
     "Vee(A,A)": "iqa_vee",
     "E_IQA_Intra(A)": "iqa_intra",
+    "VeeC(A,A)": "iqa_vee_c",
+    "VeeX(A,A)": "iqa_vee_x",
 }
 
 # Default output location, resolved relative to the repo (this file lives at
@@ -106,7 +119,25 @@ def _nonclobbering_path(directory: Path, name: str) -> Path:
     return candidate
 
 
-def compute_references(file_paths: list[str], terms: list[str]) -> dict:
+def _term_values(
+    d: dict[str, np.ndarray], term: str, ratios: dict[str, tuple[str, str]]
+) -> np.ndarray | None:
+    """A pkl key's values, or numerator / denominator for a ratio term."""
+    keys = ratios.get(term, (term,))
+    if any(k not in d for k in keys):
+        return None
+    values = [np.asarray(d[k], dtype=np.float64).reshape(-1) for k in keys]
+    return values[0] if len(values) == 1 else values[0] / values[1]
+
+
+def _unit_scale(term: str, ratios: dict[str, tuple[str, str]]) -> float:
+    """Hartree -> eV, except for the dimensionless ratio terms."""
+    return 1.0 if term in ratios else HARTREE_TO_EV
+
+
+def compute_references(
+    file_paths: list[str], terms: list[str], ratios: dict[str, tuple[str, str]]
+) -> dict:
     """Scan pkl files and return {term: {"kind", "refs_ha": {Z: ha}, "meta": {...}}}."""
     # Per-atom accumulators: term -> {Z: [count, sum, sumsq]}
     atomic_acc: dict[str, dict[int, list[float]]] = {t: {} for t in terms}
@@ -123,10 +154,10 @@ def compute_references(file_paths: list[str], terms: list[str]) -> dict:
         n = z.size
 
         for term in terms:
-            if term not in d:
+            arr = _term_values(d, term, ratios)
+            if arr is None:
                 missing_counts[term] += 1
                 continue
-            arr = np.asarray(d[term], dtype=np.float64).reshape(-1)
 
             if arr.size == n and n > 1:
                 kind = "atomic"
@@ -204,11 +235,16 @@ def compute_references(file_paths: list[str], terms: list[str]) -> dict:
     return results
 
 
-def print_report(results: dict, terms: list[str]) -> None:
+def print_report(
+    results: dict, terms: list[str], ratios: dict[str, tuple[str, str]]
+) -> None:
     for term in terms:
         entry = results[term]
+        scale = _unit_scale(term, ratios)
         print("=" * 68)
         print(f"Term: {term}")
+        if term in ratios:
+            print("  Dimensionless ratio {} / {}".format(*ratios[term]))
         if entry["kind"] is None:
             print(
                 f"  No usable data (missing in {entry['missing']}/{entry['n_files']} files)."
@@ -228,7 +264,7 @@ def print_report(results: dict, terms: list[str]) -> None:
                 ha = entry["refs_ha"][zi]
                 print(
                     f"  {zi:>3} {_symbol(zi):>3} {entry['counts'][zi]:>10} "
-                    f"{ha:>16.8f} {ha * HARTREE_TO_EV:>16.8f} {entry['std_ha'][zi]:>14.8f}"
+                    f"{ha:>16.8f} {ha * scale:>16.8f} {entry['std_ha'][zi]:>14.8f}"
                 )
         else:
             print(
@@ -247,19 +283,25 @@ def print_report(results: dict, terms: list[str]) -> None:
                 ha = entry["refs_ha"][zi]
                 print(
                     f"  {zi:>3} {_symbol(zi):>3} {entry['counts'][zi]:>10} "
-                    f"{ha:>16.8f} {ha * HARTREE_TO_EV:>16.8f}"
+                    f"{ha:>16.8f} {ha * scale:>16.8f}"
                 )
         print()
 
 
 def build_yaml(
-    results: dict, terms: list[str], input_dir: str, max_num_elements: int
+    results: dict,
+    terms: list[str],
+    ratios: dict[str, tuple[str, str]],
+    input_dir: str,
+    max_num_elements: int,
 ) -> str:
-    """Render the references as a YAML string, one block per term (values in eV)."""
+    """Render the references as a YAML string, one block per term (values in eV,
+    ratio terms dimensionless)."""
     lines: list[str] = [
         "# Isolated-atom reference energies computed by iqa_isolated_atom_refs.py",
         f"# Source dataset: {input_dir}",
-        "# Values are per-element references in eV, indexed by atomic number Z.",
+        "# Values are per-element references in eV (ratio terms: dimensionless),",
+        "# indexed by atomic number Z.",
         "# 0.0 marks elements not present in the source dataset.",
         "",
     ]
@@ -278,7 +320,12 @@ def build_yaml(
             if entry["kind"] == "atomic"
             else "linear least-squares fit vs. element counts"
         )
-        lines.append(f"# from pkl key {term!r} ({method})")
+        source = (
+            "pkl keys {!r} / {!r}, dimensionless".format(*ratios[term])
+            if term in ratios
+            else f"pkl key {term!r}"
+        )
+        lines.append(f"# from {source} ({method})")
         lines.append(f"{refname}:")
         refs_ha = entry["refs_ha"]
 
@@ -291,9 +338,9 @@ def build_yaml(
                 continue
             if z in refs_ha:
                 ha = refs_ha[z]
-                ev = ha * HARTREE_TO_EV
-                lines.append(f"# Index {z}: {_symbol(z)}  ({ha:.12g} Ha)")
-                lines.append(f"- {ev:.11f}")
+                unit = "" if term in ratios else " Ha"
+                lines.append(f"# Index {z}: {_symbol(z)}  ({ha:.12g}{unit})")
+                lines.append(f"- {ha * _unit_scale(term, ratios):.11f}")
                 z += 1
             else:
                 # Collapse a run of absent elements into one comment.
@@ -330,7 +377,15 @@ def main():
         type=str,
         nargs="+",
         default=DEFAULT_TERMS,
-        help="pkl keys to compute references for (default: the 5 IQA energy terms)",
+        help="pkl keys to compute references for (default: the IQA energy terms)",
+    )
+    parser.add_argument(
+        "--ratio",
+        nargs=3,
+        action="append",
+        metavar=("NAME", "NUMERATOR", "DENOMINATOR"),
+        help="dimensionless ratio term NUMERATOR / DENOMINATOR of two per-atom pkl "
+        "keys, repeatable (default: the E_IQA_Intra(A) fractions)",
     )
     parser.add_argument(
         "--output_dir",
@@ -358,10 +413,18 @@ def main():
         return
     print(f"Found {len(file_paths)} .pkl files under {args.input_dir}\n")
 
-    results = compute_references(file_paths, args.terms)
-    print_report(results, args.terms)
+    ratios = (
+        DEFAULT_RATIOS
+        if args.ratio is None
+        else {name: (num, den) for name, num, den in args.ratio}
+    )
+    terms = args.terms + list(ratios)
+    results = compute_references(file_paths, terms, ratios)
+    print_report(results, terms, ratios)
 
-    yaml_text = build_yaml(results, args.terms, args.input_dir, args.max_num_elements)
+    yaml_text = build_yaml(
+        results, terms, ratios, args.input_dir, args.max_num_elements
+    )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = _nonclobbering_path(output_dir, args.output_name)

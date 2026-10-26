@@ -1,18 +1,19 @@
 from __future__ import annotations
+
 import csv
 import logging
 import os
-import random
 import pickle
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional
 
-import torch
-import torch_geometric
-from fairchem.core.datasets.base_dataset import BaseDataset
-from fairchem.core.common.registry import registry
-from pathlib import Path
 import numpy as np
+import torch
+
+from fairchem.core.common.registry import registry
 from fairchem.core.datasets.atomic_data import AtomicData
+from fairchem.core.datasets.base_dataset import BaseDataset
+
 
 def angstrom_to_bohr(x: torch.Tensor) -> torch.Tensor:  # 1 Å = 1.8897261245650618 Bohr
     return x * 1.8897261245650618
@@ -22,12 +23,13 @@ def bohr_to_angstrom(x: torch.Tensor) -> torch.Tensor:
     return x / 1.8897261245650618
 
 
-def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:          # 1 Ha = 27.211386245988 eV
+def eV_to_Ht(x: torch.Tensor) -> torch.Tensor:  # 1 Ha = 27.211386245988 eV
     return x / 27.211386245988
 
 
 def Ht_to_eV(x: torch.Tensor) -> torch.Tensor:
     return x * 27.211386245988
+
 
 def Ht_per_Bohr_to_eV_per_A(x: torch.Tensor) -> torch.Tensor:
     # AIMAll forces are atomic units (Hartree/Bohr), matching the Bohr positions;
@@ -73,10 +75,11 @@ def label_level(in_key: str) -> Literal["system", "atom", "edge"]:
         return "atom"
     return "system"
 
+
 def _to_mapping(sample: Any) -> Dict[str, Any]:
     if isinstance(sample, dict):
         return sample
-    if hasattr(sample, "keys") and callable(getattr(sample, "keys")):
+    if hasattr(sample, "keys") and callable(sample.keys):
         try:
             keys = list(sample.keys())
             return {k: getattr(sample, k) for k in keys}
@@ -95,11 +98,13 @@ def _to_mapping(sample: Any) -> Dict[str, Any]:
         out[k] = v
     return out
 
+
 def _first_present(d: Dict[str, Any], *cands: str):
     for k in cands:
         if k in d:
             return d[k]
     return None
+
 
 def _require(d: Dict[str, Any], logical: str, *cands: str):
     v = _first_present(d, *cands)
@@ -110,6 +115,7 @@ def _require(d: Dict[str, Any], logical: str, *cands: str):
             f"Available keys (first 50): {avail[:50]}{' ...' if len(avail) > 50 else ''}"
         )
     return v
+
 
 def _tensor1d(x: Any) -> Optional[torch.Tensor]:
     if x is None:
@@ -126,6 +132,7 @@ class IQAPKLDataset(BaseDataset):
         self,
         src: str,
         key_mapping: Optional[Dict[str, str]] = None,
+        ratio_key_mapping: dict[str, list[str]] | None = None,
         name: str = "iqa_pkl",
         allow_missing_labels: bool = False,
         bohr2ang: bool = True,
@@ -143,6 +150,17 @@ class IQAPKLDataset(BaseDataset):
         super().__init__({})  # BaseDataset wants a config object; empty is fine
         self.src = Path(src)
         self.key_mapping = key_mapping or {}
+        # Dimensionless labels out_key = numerator / denominator of two pkl labels of
+        # the same level, e.g. the fraction T(A) / E_IQA_Intra(A). No unit conversion.
+        self.ratio_key_mapping = self._validate_ratio_key_mapping(
+            ratio_key_mapping or {}
+        )
+        self._label_levels: dict[str, Literal["system", "atom", "edge"]] = {
+            out_key: label_level(in_key) for out_key, in_key in self.key_mapping.items()
+        } | {
+            out_key: label_level(numerator)
+            for out_key, (numerator, _) in self.ratio_key_mapping.items()
+        }
         self.allow_missing_labels = allow_missing_labels
         self.bohr2ang = bohr2ang
         self.ht2ev = ht2ev
@@ -199,9 +217,53 @@ class IQAPKLDataset(BaseDataset):
         # All pkls under src, before fold selection; the metadata cache covers them.
         self._all_file_paths = list(self.file_paths)
         if fold_file is not None:
-            self.file_paths = self._select_folds(fold_file, include_folds, exclude_folds)
+            self.file_paths = self._select_folds(
+                fold_file, include_folds, exclude_folds
+            )
         elif include_folds is not None or exclude_folds is not None:
             raise ValueError("include_folds / exclude_folds need a fold_file")
+
+    def _validate_ratio_key_mapping(
+        self, ratio_key_mapping: dict[str, list[str]]
+    ) -> dict[str, tuple[str, str]]:
+        validated: dict[str, tuple[str, str]] = {}
+        for out_key, in_keys in ratio_key_mapping.items():
+            if len(in_keys) != 2:
+                raise ValueError(
+                    f"ratio_key_mapping '{out_key}' needs [numerator, denominator], "
+                    f"got {list(in_keys)}"
+                )
+            numerator, denominator = (str(k) for k in in_keys)
+            if label_level(numerator) != label_level(denominator):
+                raise ValueError(
+                    f"ratio_key_mapping '{out_key}': '{numerator}' is a "
+                    f"{label_level(numerator)} label but '{denominator}' a "
+                    f"{label_level(denominator)} label"
+                )
+            if out_key in self.key_mapping:
+                raise ValueError(
+                    f"'{out_key}' is in both key_mapping and ratio_key_mapping"
+                )
+            validated[out_key] = (numerator, denominator)
+        return validated
+
+    @staticmethod
+    def _ratio_label(
+        d: dict[str, Any], path: str, numerator: str, denominator: str
+    ) -> torch.Tensor:
+        # in the pkl's own units, so the ratio is dimensionless
+        num, den = (
+            _tensor1d(torch.as_tensor(_require(d, key, key), dtype=torch.float64))
+            for key in (numerator, denominator)
+        )
+        if num.ndim != 1 or num.shape != den.shape:
+            raise ValueError(
+                f"'{numerator}' {tuple(num.shape)} and '{denominator}' "
+                f"{tuple(den.shape)} in {path} must be matching scalars per row"
+            )
+        if (den == 0).any():
+            raise ValueError(f"'{denominator}' in {path} has zeros")
+        return num / den
 
     def _select_folds(
         self,
@@ -249,19 +311,24 @@ class IQAPKLDataset(BaseDataset):
         d = _to_mapping(raw)
 
         # --- base graph (strict shapes/dtypes) ---
-        pos = torch.as_tensor(_require(d, "pos", "pos", "positions", "R"),
-                              dtype=torch.get_default_dtype())          # (N,3)
+        pos = torch.as_tensor(
+            _require(d, "pos", "pos", "positions", "R"), dtype=torch.get_default_dtype()
+        )  # (N,3)
         if self.bohr2ang:
             pos = bohr_to_angstrom(pos)
-        Z = torch.as_tensor(_require(d, "atomic_numbers", "atomic_numbers", "Z", "z", "numbers"),
-                            dtype=torch.long).view(-1)                  # (N,)
-        edge_index = torch.as_tensor(_require(d, "edge_index", "edge_index", "edges"),
-                                     dtype=torch.long)                  # (2,E)
-        N = int(pos.shape[0]); E = int(edge_index.shape[1])
+        Z = torch.as_tensor(
+            _require(d, "atomic_numbers", "atomic_numbers", "Z", "z", "numbers"),
+            dtype=torch.long,
+        ).view(-1)  # (N,)
+        edge_index = torch.as_tensor(
+            _require(d, "edge_index", "edge_index", "edges"), dtype=torch.long
+        )  # (2,E)
+        N = int(pos.shape[0])
+        E = int(edge_index.shape[1])
 
         # --- labels (system + edge) ---
         labels: Dict[str, torch.Tensor] = {}
-        #new logic for tensor labels
+        # new logic for tensor labels
         for out_key, in_key in self.key_mapping.items():
             if in_key not in d:
                 # Silently dropping the label yields an AtomicData whose key set differs
@@ -284,12 +351,17 @@ class IQAPKLDataset(BaseDataset):
             # If per-atom vector (N,3) -> keep
             if t.ndim == 2 and t.shape[1] == 3:
                 labels[out_key] = t
-            #if scalar -> tensor with shape (1,)
+            # if scalar -> tensor with shape (1,)
             elif t.ndim == 1 or (t.ndim == 2 and t.shape[1] == 1):
                 labels[out_key] = _tensor1d(t)
             # single scalar
             else:
                 labels[out_key] = t.view(1) if t.ndim == 0 else t
+
+        for out_key, (numerator, denominator) in self.ratio_key_mapping.items():
+            labels[out_key] = self._ratio_label(d, path, numerator, denominator).to(
+                pos.dtype
+            )
 
         if self.lagrangian_cutoff is not None:
             self._mask_poorly_integrated_atoms(d, path, labels, edge_index, N)
@@ -303,11 +375,11 @@ class IQAPKLDataset(BaseDataset):
         # --- build a VALID AtomicData (constructor accepts only fixed fields) ---
         # For non-PBC molecules, give zeros cell/pbc/offsets and fillers for required fields:
         cell = torch.zeros(1, 3, 3, dtype=pos.dtype)
-        pbc  = torch.zeros(1, 3, dtype=torch.bool)
+        pbc = torch.zeros(1, 3, dtype=torch.bool)
         cell_offsets = torch.zeros(E, 3, dtype=pos.dtype)
         nedges = torch.tensor([E], dtype=torch.long)
         natoms = torch.tensor([N], dtype=torch.long)
-        
+
         atomic_charges = None
         if self.atomic_charge_key is not None:
             atomic_charges = self._load_atomic_charges(d, path, N, pos.dtype)
@@ -328,18 +400,18 @@ class IQAPKLDataset(BaseDataset):
                     f"charge_key '{self.charge_key}' not found in {path}; "
                     f"defaulting charge to 0. Available keys: {sorted(d.keys())[:50]}"
                 )
-            charge = torch.zeros(1, dtype=torch.long)   # default to neutral
+            charge = torch.zeros(1, dtype=torch.long)  # default to neutral
 
         # All systems in this dataset are closed-shell singlets.
-        spin   = torch.zeros(1, dtype=torch.long)   # system spin (int)
-        fixed  = torch.zeros(N, dtype=torch.long)   # per-node flags
-        tags   = torch.zeros(N, dtype=torch.long)   # per-node tags
+        spin = torch.zeros(1, dtype=torch.long)  # system spin (int)
+        fixed = torch.zeros(N, dtype=torch.long)  # per-node flags
+        tags = torch.zeros(N, dtype=torch.long)  # per-node tags
 
-        energy = labels.get("energy", None)
+        energy = labels.get("energy")
 
         if energy is not None:
             energy = Ht_to_eV(energy) if self.ht2ev else energy  # (E,)
-        
+
         ad = AtomicData(
             pos=pos,
             atomic_numbers=Z,
@@ -373,7 +445,7 @@ class IQAPKLDataset(BaseDataset):
             # its shape: energy labels are Hartree at every level (system (1,),
             # per-atom (N,) or per-edge (E,)), and dipoles come as both vectors
             # (N, 3) and magnitudes (N,), so a shape test would mislabel both.
-            if out_key in DIMENSIONLESS_KEYS:
+            if out_key in DIMENSIONLESS_KEYS or out_key in self.ratio_key_mapping:
                 pass
             elif out_key in FORCE_KEYS:
                 val = Ht_per_Bohr_to_eV_per_A(val) if self.force_ht2ev else val
@@ -423,15 +495,14 @@ class IQAPKLDataset(BaseDataset):
             "atom": bad_atoms,
             "edge": bad_atoms[edge_index[0]] | bad_atoms[edge_index[1]],
         }
-        for out_key, in_key in self.key_mapping.items():
-            level = label_level(in_key)
+        for out_key, level in self._label_levels.items():
             if level == "system" or out_key not in labels:
                 continue
             mask = masks[level]
             val = labels[out_key]
             if val.shape[0] != mask.shape[0]:
                 raise ValueError(
-                    f"'{in_key}' in {path} is named as a per-{level} label but has "
+                    f"'{out_key}' in {path} is named as a per-{level} label but has "
                     f"{val.shape[0]} rows, expected {mask.shape[0]}"
                 )
             val = val.clone()
@@ -478,7 +549,9 @@ class IQAPKLDataset(BaseDataset):
         for p in self._all_file_paths:
             with open(p, "rb") as f:
                 m = _to_mapping(pickle.load(f))
-            n = int(torch.as_tensor(_require(m, "pos", "pos", "positions", "R")).shape[0])
+            n = int(
+                torch.as_tensor(_require(m, "pos", "pos", "positions", "R")).shape[0]
+            )
             if n == 0:
                 raise ValueError(f"{p} has zero atoms")
             natoms.append(n)

@@ -1,0 +1,59 @@
+# iqa_subterms_atomchg_so2gate_6A with V_ee split into its classical (Coulomb) and
+# exchange-correlation parts, intra-atomic and pairwise
+# (tasks/iqa_decompose_subterms_cx). Same K4L2 backbone, 6 A cutoff, sigma 0.02,
+# optimizer and shared-trunk so2_gate head. See IQA_SUBTERMS_CX_2026-10.md.
+defaults:
+  - iqa_subterms_atomchg_common
+  - tasks: iqa_decompose_subterms_cx
+  - _self_
+
+job:
+  run_name: le-subterms_cx_sharedtrunk_so2gate_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_6A_36h
+
+cutoff_radius: 6.0  # A; otf graph and radial basis cutoff
+
+# Fit 2026-10-26 with iqa_compute_normalizers.py on sumformulasplit/train (118699 pkls,
+# lagrangian_cutoff 5e-4), eV. Atom terms: residual after the per-element mean refs of
+# element_refs/iqa_isolated_atom_elem_refs.yaml; kinetic and V_ne equal
+# iqa_subterms_atomchg_pretrain's. Raw rmsd for comparison: V_ee^C 930, V_ee^X 142.
+normalizer_mean_iqa_kinetic: 0.000299868
+normalizer_rmsd_iqa_kinetic: 6.31632
+normalizer_mean_iqa_vne: -0.00283579
+normalizer_rmsd_iqa_vne: 47.3809
+normalizer_mean_iqa_vee_c: 0.00222468
+normalizer_rmsd_iqa_vee_c: 41.1757
+normalizer_mean_iqa_vee_x: -0.000191164
+normalizer_rmsd_iqa_vee_x: 4.08722
+# Pair terms, per directed edge (/2): V_ne/V_en and V_ee^C after the neutral point-charge
+# references (raw rmsd 74.5 and 73.5), V_ee^X raw. iqa_ven_ab uses the V_ne normalizer.
+normalizer_mean_iqa_vne_ab: 0.835517
+normalizer_rmsd_iqa_vne_ab: 11.6948
+normalizer_mean_iqa_vee_c_ab: -1.84775
+normalizer_rmsd_iqa_vee_c_ab: 12.7807
+normalizer_mean_iqa_vee_x_ab: -0.513562
+normalizer_rmsd_iqa_vee_x_ab: 1.34714
+# V_nn is analytic: identity normalizer leaves the physical value untouched.
+normalizer_mean_iqa_vnn_ab: 0.0
+normalizer_rmsd_iqa_vnn_ab: 1.0
+
+iqa_kinetic_coef: 1.0
+iqa_vne_coef: 1.0
+iqa_vee_c_coef: 1.0
+iqa_vee_x_coef: 1.0
+iqa_vne_ab_coef: 1.0
+iqa_ven_ab_coef: 1.0
+iqa_vee_c_ab_coef: 1.0
+iqa_vee_x_ab_coef: 1.0
+# V_nn is deterministic (analytic head) -> nothing to learn, keep it out of the loss.
+iqa_vnn_ab_coef: 0.0
+
+heads:
+  iqa_subterms_head:
+    activation_type: so2_gate
+    node_task_names: [iqa_kinetic, iqa_vne, iqa_vee_c, iqa_vee_x]
+    edge_task_names: [iqa_vne_ab, iqa_vee_c_ab, iqa_vee_x_ab]
+    # V_ee^C(A,B) and V_ee^X(A,B) are exactly symmetric on all pkls; V_en is the V_ne
+    # head read on the reversed edge.
+    symmetric_edge_task_names: [iqa_vee_c_ab, iqa_vee_x_ab]
+    reversed_edge_tasks:
+      iqa_ven_ab: iqa_vne_ab

@@ -1,0 +1,241 @@
+# The IQA energies plus each subterm as a dimensionless fraction (labels from
+# ratio_key_mapping in dataset/iqa_components.yaml). Reconstruction at inference:
+#   X(A)     = f_X(A) * E_intra(A)            X in T, V_ne, V_ee^C, V_ee^X (A,A)
+#   X(A,B)/2 = f_X(A,B) * V_nn(A,B)/2         X in V_ne, V_en, V_ee^C, V_ee^X (A,B)
+# with V_nn(A,B)/2 from the analytic head. E_inter(A,B)/2 is predicted directly, not as
+# a fraction sum (the pair subterms cancel to it by orders of magnitude).
+# Atom fractions: per-element mean fraction as element reference (element_refs yaml,
+# iqa_isolated_atom_refs.py) + z-score of the residual. Pair fractions: global z-score.
+
+# E_intra(A), as in tasks/iqa_decompose_intra_inter
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_intra_a
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_intra}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_intra_a_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_intra_a}
+    rmsd: ${normalizer_rmsd_iqa_intra_a}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_kinetic_frac
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_kinetic_frac}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_kinetic_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_kinetic_frac}
+    rmsd: ${normalizer_rmsd_iqa_kinetic_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne_frac
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vne_frac}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vne_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_c_frac
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vee_c_frac}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_c_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_c_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_c_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_x_frac
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vee_x_frac}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_x_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_x_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_x_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+# E_inter(A,B)/2, as in tasks/iqa_decompose_intra_inter
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_inter_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_inter_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne_ab_frac
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vne_ab_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+# V_en(A,B)/V_nn(A,B) = V_ne(B,A)/V_nn(B,A): the head emits the V_ne
+# fraction of the reversed edge, so the normalizer must equal V_ne's.
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_ven_ab_frac
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_ven_ab_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_c_ab_frac
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_c_ab_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_c_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_c_ab_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_x_ab_frac
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_x_ab_frac_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_x_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_x_ab_frac}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+# V_nn(A,B)/2 from the analytic head, the scale of the pair fractions
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vnn_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vnn_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vnn_ab}
+    rmsd: ${normalizer_rmsd_iqa_vnn_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32

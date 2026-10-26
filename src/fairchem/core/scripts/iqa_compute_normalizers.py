@@ -7,7 +7,9 @@ subtracted with the same modules the tasks use, so units, Lagrangian masking and
 baselines match training by construction:
 
 - atom energies: ``AtomElementReferences`` (isolated-atom refs per element),
-- pair subterms V_ne/V_en/V_ee(A,B): ``NeutralPointChargeEdgeReferences``,
+- fractions X(A)/E_intra(A) (``ratio_key_mapping``): ``AtomElementReferences`` with the
+  per-element mean fractions, so their normalizer is a per-element z-score,
+- pair subterms V_ne/V_en/V_ee/V_ee^C(A,B): ``NeutralPointChargeEdgeReferences``,
 - E_inter(A,B): additionally ``PredictedChargeEdgeReferences`` evaluated with the AIM
   q(A) labels (the charges the model's own predictions converge to).
 
@@ -58,6 +60,12 @@ ATOM_ELEMENT_REFS: dict[str, str] = {
     "iqa_vne": "iqa_vne",
     "iqa_vee": "iqa_vee",
     "iqa_intra_a": "iqa_intra",
+    "iqa_vee_c": "iqa_vee_c",
+    "iqa_vee_x": "iqa_vee_x",
+    "iqa_kinetic_frac": "iqa_kinetic_frac",
+    "iqa_vne_frac": "iqa_vne_frac",
+    "iqa_vee_c_frac": "iqa_vee_c_frac",
+    "iqa_vee_x_frac": "iqa_vee_x_frac",
 }
 # iqa_charge keeps the identity normalizer when its head conserves the total charge
 ATOM_RAW = ["iqa_inter_a", "iqa_charge"]
@@ -67,8 +75,18 @@ EDGE_POINT_CHARGE_SIGNS: dict[str, int] = {
     "iqa_vne_ab": -1,
     "iqa_ven_ab": -1,
     "iqa_vee_ab": 1,
+    "iqa_vee_c_ab": 1,
 }
-EDGE_RAW = ["iqa_inter_ab", "iqa_vnn_ab"]
+EDGE_RAW = [
+    "iqa_inter_ab",
+    "iqa_vnn_ab",
+    "iqa_vee_x_ab",
+    # fractions X(A,B)/V_nn(A,B) (ratio_key_mapping)
+    "iqa_vne_ab_frac",
+    "iqa_ven_ab_frac",
+    "iqa_vee_c_ab_frac",
+    "iqa_vee_x_ab_frac",
+]
 # edge label -> charge label whose q_A q_B / 2R baseline it is also reported against
 EDGE_CHARGE_REFS: dict[str, str] = {"iqa_inter_ab": "iqa_charge"}
 ALL_LABELS = (
@@ -159,7 +177,10 @@ def _accumulate(indices: list[int]) -> tuple[Accumulators, MissingLabels]:
         # the backbone sets this on the batch before the loss reads the atom refs
         sample.atomic_numbers_full = sample.atomic_numbers
         for label in ALL_LABELS:
-            if label not in _dataset.key_mapping:
+            if (
+                label not in _dataset.key_mapping
+                and label not in _dataset.ratio_key_mapping
+            ):
                 continue
             if label not in sample:
                 missing.setdefault(label, []).append(path)
@@ -206,10 +227,16 @@ def main() -> None:
         for out_key, in_key in dataset_cfg["key_mapping"].items()
         if out_key in ALL_LABELS
     }
+    ratio_key_mapping: dict[str, list[str]] = {
+        out_key: in_keys
+        for out_key, in_keys in dataset_cfg.get("ratio_key_mapping", {}).items()
+        if out_key in ALL_LABELS
+    }
     lagrangian_cutoff: float | None = dataset_cfg["lagrangian_cutoff"]
     dataset = IQAPKLDataset(
         src=args.data_dir,
         key_mapping=key_mapping,
+        ratio_key_mapping=ratio_key_mapping,
         ht2ev=dataset_cfg["ht2ev"],
         lagrangian_cutoff=lagrangian_cutoff,
         # files lacking a label are listed below instead of aborting the fit
@@ -221,6 +248,7 @@ def main() -> None:
     atom_refs = {
         label: AtomElementReferences(torch.tensor(refs_yaml[key], dtype=torch.float64))
         for label, key in ATOM_ELEMENT_REFS.items()
+        if label in key_mapping or label in ratio_key_mapping
     }
     edge_refs = {
         label: NeutralPointChargeEdgeReferences(sign)
