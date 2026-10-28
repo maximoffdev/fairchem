@@ -11,6 +11,7 @@ Both inherit the task-independent `iqa_subterms_atomchg_common.yaml`.
 |---|---|---|
 | 1 | `iqa_subterms_cx_so2gate_6A.yaml` | the subterms directly |
 | 2 | `iqa_subterm_fractions_so2gate_6A.yaml` | E_intra, E_inter and each subterm as a fraction |
+| 3 | `iqa_subterm_fractions_so2gate_triangle_6A.yaml` | as run 2, with triangle attention in the head |
 
 ## Identities in the labels
 
@@ -71,6 +72,15 @@ Known limitations:
   The fraction loss weights all atoms equally, so this model is not expected to beat
   run 1 on absolute intra subterms.
 
+## Run 3: fractions with triangle attention
+
+Run 2 with `attention_type: triangle` in the shared head trunk; everything else,
+including the validation metrics, is inherited. The per-edge graph attention is replaced
+by AlphaFold3 triangle self-attention around the starting and ending node
+(`models/uma/nn/triangle_attention.py`): the message of edge (A,B) mixes in the edges
+(A,C) and (C,B) of every atom C that closes a triangle with A and B, with a bias from the
+third edge. Node outputs average the incoming messages. Compare against run 2.
+
 ## Validation metrics
 
 On top of the per-task `val/loss/<task>`, both runs log `val/mae/<name>` (eV). These are
@@ -124,6 +134,8 @@ for cfg in iqa_subterms_cx_so2gate_6A iqa_subterm_fractions_so2gate_6A; do
     cluster.ranks_per_node=4 cluster.max_atoms=800 cluster.timeout_hr=36
 done
 ```
+
+Run 3 was submitted the same way with `cfg=iqa_subterm_fractions_so2gate_triangle_6A`.
 
 Each run uses 4 GPUs at 800 atoms per GPU. That is the same global batch (3200 atoms) as
 the 2 x 1600 reruns and the 4 x 800 best-val resume of the 6 Å subterm model.
