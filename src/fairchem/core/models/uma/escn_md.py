@@ -11,7 +11,7 @@ import copy
 import logging
 import math
 import os
-from typing import TYPE_CHECKING, Literal, Dict
+from typing import TYPE_CHECKING, Literal, NamedTuple, Dict
 
 import torch
 import torch.nn as nn
@@ -1376,6 +1376,18 @@ def _project_fp32(x: torch.Tensor, *layers: nn.Module) -> torch.Tensor:
     return x
 
 
+class TrunkMessages(NamedTuple):
+    """Per-edge output of the SO(2) attention trunk.
+
+    ``edges`` feed the edge projections; ``nodes`` are reduced onto the target atoms
+    by ``aggregate_to_nodes``. They differ only when the triangle head weights the
+    node aggregation with graph attention (``triangle_node_aggregation="attention"``).
+    """
+
+    edges: torch.Tensor
+    nodes: torch.Tensor
+
+
 def _scatter_to_nodes_fp32(
     x_message: torch.Tensor, edge_index: torch.Tensor, num_nodes: int
 ) -> torch.Tensor:
@@ -1438,6 +1450,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         reversed_edge_task_name: str | None = None,
         attention_gating: Literal["softmax", "sigmoid"] = "softmax",
         attention_type: Literal["graph", "triangle"] = "graph",
+        triangle_node_aggregation: Literal["mean", "attention"] = "mean",
     ) -> None:
         """
         Args (IQA additions):
@@ -1447,9 +1460,13 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 AlphaFold3 triangle self-attention around the starting and ending
                 node (residual, see ``EquivariantTriangleAttention``), so the message
                 of edge (A, B) mixes in the edges (A, C) / (C, B) of every atom C
-                closing a triangle with A and B; node outputs then average the
-                incoming messages. Needs ``attention_gating="softmax"``, the triangle
-                softmax, and does not run under graph parallel.
+                closing a triangle with A and B. Needs ``attention_gating="softmax"``,
+                the triangle softmax, and does not run under graph parallel.
+            triangle_node_aggregation: how node outputs gather the triangle-updated
+                messages of the incoming edges. ``"mean"`` (default) averages them;
+                ``"attention"`` weights them with the per-head softmax attention of
+                ``attention_type="graph"``, so each head can focus on some
+                neighbours, while the edge outputs stay unweighted.
             activation_type: nonlinearity between the two SO(2) convolutions, applied
                 in the edge frame (see ``_build_edge_frame_activation``):
                 ``"so2_gate"`` is exactly equivariant under the roll of the edge frame
@@ -1507,7 +1524,22 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
                 "use_s2_act_attn computes graph attention weights; it cannot be "
                 "combined with attention_type='triangle'."
             )
+        if triangle_node_aggregation not in ("mean", "attention"):
+            raise ValueError(
+                f"Unknown triangle_node_aggregation {triangle_node_aggregation}"
+            )
+        if attention_type == "graph" and triangle_node_aggregation != "mean":
+            raise ValueError(
+                "triangle_node_aggregation only applies to attention_type='triangle'; "
+                "graph attention always weights the node aggregation."
+            )
         self.attention_type = attention_type
+        self.triangle_node_aggregation = triangle_node_aggregation
+        # Per-edge, per-head graph attention weights: they scale the messages in the
+        # graph head and only the node aggregation in the triangle head.
+        self.uses_attention_weights = (
+            attention_type == "graph" or triangle_node_aggregation == "attention"
+        )
 
         # === EBDM-origin: Parameter initialization ===
         self.backbone = backbone
@@ -1619,10 +1651,10 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # The graph attention weights come from these extra m=0 outputs of so2_conv_1.
         self.num_alpha_channels = (
             self.num_heads * self.attn_alpha_channels
-            if self.attention_type == "graph"
+            if self.uses_attention_weights
             else 0
         )
-        if self.use_s2_act_attn or self.attention_type == "triangle":
+        if self.use_s2_act_attn or not self.uses_attention_weights:
             self.alpha_norm = None
             self.alpha_act = None
             self.alpha_dot = None
@@ -1630,7 +1662,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             self.alpha_norm = nn.LayerNorm(self.attn_alpha_channels)
         else:
             self.alpha_norm = nn.Identity()
-        if not self.use_s2_act_attn and self.attention_type == "graph":
+        if not self.use_s2_act_attn and self.uses_attention_weights:
             self.alpha_act = SmoothLeakyReLU()
             self.alpha_dot = nn.Parameter(
                 torch.randn(self.num_heads, self.attn_alpha_channels)
@@ -1793,7 +1825,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
 
     def compute_edge_messages(
         self, data: AtomicData, emb: dict[str, torch.Tensor]
-    ) -> torch.Tensor:
+    ) -> TrunkMessages:
         """Run the SO(2) attention trunk and return per-edge message features.
 
         This is everything the head does before the task-specific output
@@ -1805,7 +1837,8 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         ``IQA_MultiTaskSO2Head``) instead of each re-deriving the same features.
 
         Returns:
-            Tensor [E, (lmax+1)^2, num_heads * attn_value_channels] in the global frame.
+            ``TrunkMessages`` of [E, (lmax+1)^2, num_heads * attn_value_channels]
+            tensors in the global frame.
         """
         # === FAIRCHEM ADAPTATION: Extract emb dict components ===
         # In EBDM, inputs are separate parameters; here they come bundled in emb dict
@@ -1910,12 +1943,34 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         if self.attention_type == "triangle":
             # Triangles mix edges with different frames, so attend in the global one.
             x_message = torch.bmm(wigner_inv, x_message)
-            return self.apply_triangle_attention(data, edge_index, x_message)
+            x_message = self.apply_triangle_attention(data, edge_index, x_message)
+            if not self.uses_attention_weights:
+                return TrunkMessages(edges=x_message, nodes=x_message)
+            alpha = self.attention_weights(x_0_alpha, edge_index)
+            return TrunkMessages(
+                edges=x_message, nodes=self.weight_heads(x_message, alpha)
+            )
 
         # === EBDM-origin: Attention weight computation ===
-        # Compute per-head scalar attention weights from m=0 (scalar) coefficients.
+        alpha = self.attention_weights(
+            x_0_extra if self.use_s2_act_attn else x_0_alpha, edge_index
+        )
+        x_message = self.weight_heads(x_message, alpha)
+
+        # === EBDM-origin: Rotation back to global frame ===
+        # Apply inverse Wigner matrix to map from edge-aligned back to global frame.
+        x_message = torch.bmm(wigner_inv, x_message)
+        return TrunkMessages(edges=x_message, nodes=x_message)
+
+    def attention_weights(
+        self, x_0_alpha: torch.Tensor, edge_index: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-head graph attention weights [E, 1, num_heads, 1] from m=0 scalars.
+
+        With ``use_s2_act_attn`` the input already holds the per-head logits.
+        """
         if self.use_s2_act_attn:
-            alpha = x_0_extra
+            alpha = x_0_alpha
         else:
             x_0_alpha = x_0_alpha.view(-1, self.num_heads, self.attn_alpha_channels)
             x_0_alpha = self.alpha_norm(x_0_alpha)
@@ -1929,26 +1984,19 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         alpha = alpha.view(alpha.shape[0], 1, self.num_heads, 1)
         if self.alpha_dropout is not None:
             alpha = self.alpha_dropout(alpha)
+        return alpha
 
-        # === EBDM-origin: Attention weights × message vectors ===
-        # Reshape to separate num_heads dimension, apply attention, reshape back.
+    def weight_heads(
+        self, x_message: torch.Tensor, alpha: torch.Tensor
+    ) -> torch.Tensor:
+        """Scale each head's channels of [E, (lmax+1)^2, C] messages by its weight."""
         attn = x_message.view(
-            num_edges,
+            x_message.shape[0],
             x_message.shape[1],
             self.num_heads,
             self.attn_value_channels,
         )
-        attn = attn * alpha
-        x_message = attn.view(
-            num_edges,
-            attn.shape[1],
-            self.num_heads * self.attn_value_channels,
-        )
-
-        # === EBDM-origin: Rotation back to global frame ===
-        # Apply inverse Wigner matrix to map from edge-aligned back to global frame.
-        x_message = torch.bmm(wigner_inv, x_message)
-        return x_message
+        return (attn * alpha).view(x_message.shape)
 
     def apply_triangle_attention(
         self, data: AtomicData, edge_index: torch.Tensor, x_message: torch.Tensor
@@ -1992,7 +2040,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             "edge_index": edge_index.flip(0),
             "edge_distance_vec": -emb["edge_distance_vec"],
         }
-        x_flipped = self.compute_edge_messages(data, flipped)
+        x_flipped = self.compute_edge_messages(data, flipped).edges
         return torch.where(has_reverse.view(-1, 1, 1), x_reverse, x_flipped)
 
     def aggregate_to_nodes(
@@ -2003,11 +2051,12 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         With softmax attention the weights already sum to one per node. With sigmoid
         gating each message is weighted by the cutoff envelope (smooth in the
         positions) and the sum is divided by sqrt of the smooth neighbour count.
-        Triangle attention does not weight the edges per node, so they are averaged.
+        Triangle attention without attention weights (``triangle_node_aggregation=
+        "mean"``) does not weight the edges per node, so they are averaged.
         """
         edge_index = emb["edge_index"]
         num_nodes = emb["node_embedding"].shape[0]
-        if self.attention_type == "triangle":
+        if not self.uses_attention_weights:
             return torch_geometric.utils.scatter(
                 x_message.float(),
                 edge_index[1],
@@ -2051,7 +2100,8 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             - {node_task_name: {"node_pred": [N, 1]}} if node_prediction=True
         """
         # === Trunk: shared SO(2) attention over edges (see compute_edge_messages) ===
-        x_message = self.compute_edge_messages(data, emb)
+        messages = self.compute_edge_messages(data, emb)
+        x_message = messages.edges
 
         # === FAIRCHEM ADAPTATION: Task-keyed output dict ===
         # EBDM returns (out_embedding_nodes, out_embedding_edges) tuple.
@@ -2090,7 +2140,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # FAIRCHEM ADAPTATION: Use torch_geometric.utils.scatter instead of
         # SO3_Embedding._reduce_edge() method. Scatter sums edge messages [E, F]
         # by target node index [E] to produce node messages [N, F].
-        x_nodes = self.aggregate_to_nodes(x_message, emb)
+        x_nodes = self.aggregate_to_nodes(messages.nodes, emb)
 
         # === EBDM-origin: Node prediction (if enabled) ===
         if self.node_prediction and self.output_channels_nodes > 0:
@@ -2236,7 +2286,8 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
             )
 
     def forward(self, data, emb):
-        x_message = self.compute_edge_messages(data, emb)
+        messages = self.compute_edge_messages(data, emb)
+        x_message = messages.edges
 
         outputs: dict[str, dict] = {}
 
@@ -2255,7 +2306,7 @@ class IQA_IntraSO2MultiHead(SO2EquivariantGraphAttentionNodeEdgePrediction):
                 "edge_index": _predicted_edge_index(emb),
             }
 
-        x_nodes = self.aggregate_to_nodes(x_message, emb)
+        x_nodes = self.aggregate_to_nodes(messages.nodes, emb)
 
         # per-term projections (each term has its own two-layer stack)
         component_preds: list[torch.Tensor] = []
@@ -2491,7 +2542,8 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
                 outputs.update(head(data, emb))
             return outputs
 
-        x_message = self.trunk.compute_edge_messages(data, emb)
+        messages = self.trunk.compute_edge_messages(data, emb)
+        x_message = messages.edges
 
         x_reverse = (
             self.trunk.reversed_edge_messages(data, emb, x_message)
@@ -2515,7 +2567,7 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
 
         if self.node_task_names:
             # Same neighbor aggregation the single-task head does, but only once.
-            x_nodes = self.trunk.aggregate_to_nodes(x_message, emb)
+            x_nodes = self.trunk.aggregate_to_nodes(messages.nodes, emb)
             for task in self.node_task_names:
                 proj_1 = (
                     self.node_proj_1_tasks[task]

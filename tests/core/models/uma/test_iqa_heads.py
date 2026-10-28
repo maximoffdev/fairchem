@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch_geometric.utils
 from ase import Atoms
 from ase.build import molecule as get_molecule
 from e3nn.o3 import rand_matrix
@@ -129,10 +130,10 @@ def test_reversed_messages_lookup_matches_flipped_trunk(backbone_and_emb):
         "edge_distance_vec": -emb["edge_distance_vec"],
     }
     with torch.no_grad():
-        x = head.compute_edge_messages(batch, emb)
+        x = head.compute_edge_messages(batch, emb).edges
         looked_up = head.reversed_edge_messages(batch, emb, x)
-        flipped = head.compute_edge_messages(batch, flipped_emb)
-        flipped_again = head.compute_edge_messages(batch, flipped_emb)
+        flipped = head.compute_edge_messages(batch, flipped_emb).edges
+        flipped_again = head.compute_edge_messages(batch, flipped_emb).edges
     call_noise = (flipped - flipped_again).abs().max()
     assert (looked_up - flipped).abs().max() < 3 * call_noise
     assert call_noise < 0.1 * flipped.abs().max()
@@ -514,7 +515,7 @@ def test_intra_multi_term_head_shares_the_trunk(backbone_and_emb, no_frame_roll)
 
 
 def _triangle_head(
-    backbone: eSCNMDBackbone, **kwargs: bool | str
+    backbone: eSCNMDBackbone, **kwargs: bool | str | int
 ) -> SO2EquivariantGraphAttentionNodeEdgePrediction:
     """Triangle head with nonzero output projections, which start at zero (identity)."""
     head = SO2EquivariantGraphAttentionNodeEdgePrediction(
@@ -610,11 +611,16 @@ def test_triangle_edges_see_the_third_atom(backbone_and_emb, no_frame_roll):
         assert (not torch.allclose(full, less, atol=1e-6)) == changes
 
 
-def test_triangle_head_is_rotation_invariant(monkeypatch):
+@pytest.mark.parametrize("node_aggregation", ["mean", "attention"])
+def test_triangle_head_is_rotation_invariant(monkeypatch, node_aggregation: str):
     _fixed_roll(monkeypatch, 0.0)
     torch.manual_seed(0)
     backbone = eSCNMDBackbone(**BACKBONE_KWARGS, ff_type="spectral")
-    head = _triangle_head(backbone, activation_type="so2_gate")
+    head = _triangle_head(
+        backbone,
+        activation_type="so2_gate",
+        triangle_node_aggregation=node_aggregation,
+    )
     torch.manual_seed(1)
     rotation = rand_matrix()
     batch, rotated = _batch(), _batch(rotation)
@@ -674,3 +680,50 @@ def test_attention_type_validation_and_default(backbone_and_emb):
         SO2EquivariantGraphAttentionNodeEdgePrediction(
             backbone, attention_type="triangle", use_s2_act_attn=True
         )
+    with pytest.raises(ValueError, match="triangle_node_aggregation"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, attention_type="triangle", triangle_node_aggregation="max"
+        )
+    with pytest.raises(ValueError, match="only applies to attention_type='triangle'"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, triangle_node_aggregation="attention"
+        )
+
+
+def test_mean_triangle_head_has_no_attention_weights(backbone_and_emb):
+    """Keeps checkpoints of the mean-aggregation triangle runs loadable."""
+    backbone, _, _ = backbone_and_emb
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, attention_type="triangle"
+    )
+    assert not [key for key in head.state_dict() if "alpha" in key]
+
+
+def test_triangle_attention_node_aggregation_weights_only_the_nodes(
+    backbone_and_emb, no_frame_roll
+):
+    backbone, batch, emb = backbone_and_emb
+    emb = _scaled(emb, 30.0)
+    # 2 heads of 4 alpha channels: with one channel per head (8 heads of the
+    # 8-channel test model) the LayerNorm zeroes the logits and the weights are uniform.
+    head = _triangle_head(backbone, triangle_node_aggregation="attention", num_heads=2)
+    with torch.no_grad():
+        out = head(batch, emb)
+        head.alpha_dot.zero_()  # uniform weights over each atom's incoming edges
+        uniform = head(batch, emb)
+        messages = head.compute_edge_messages(batch, emb)
+        aggregated = head.aggregate_to_nodes(messages.nodes, emb)
+    assert torch.equal(
+        uniform["iqa_inter_ab"]["edge_pred"], out["iqa_inter_ab"]["edge_pred"]
+    )
+    assert not torch.allclose(
+        uniform["iqa_intra_a"]["node_pred"], out["iqa_intra_a"]["node_pred"]
+    )
+    mean = torch_geometric.utils.scatter(
+        messages.edges.float(),
+        emb["edge_index"][1],
+        dim=0,
+        dim_size=batch.num_nodes,
+        reduce="mean",
+    )
+    torch.testing.assert_close(aggregated, mean)
