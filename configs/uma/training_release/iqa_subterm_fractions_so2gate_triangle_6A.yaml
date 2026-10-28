@@ -13,3 +13,6 @@ job:
 heads:
   iqa_subterms_head:
     attention_type: triangle
+    # mean: atoms average the messages of their incoming edges (the default).
+    # attention: weight them with the per-head softmax attention of the graph head.
+    triangle_node_aggregation: mean

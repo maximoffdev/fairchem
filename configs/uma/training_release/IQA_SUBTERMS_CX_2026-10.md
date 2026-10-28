@@ -12,6 +12,7 @@ Both inherit the task-independent `iqa_subterms_atomchg_common.yaml`.
 | 1 | `iqa_subterms_cx_so2gate_6A.yaml` | the subterms directly |
 | 2 | `iqa_subterm_fractions_so2gate_6A.yaml` | E_intra, E_inter and each subterm as a fraction |
 | 3 | `iqa_subterm_fractions_so2gate_triangle_6A.yaml` | as run 2, with triangle attention in the head |
+| 4 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_6A.yaml` | as run 3, with attention-weighted node aggregation |
 
 ## Identities in the labels
 
@@ -81,6 +82,16 @@ by AlphaFold3 triangle self-attention around the starting and ending node
 (A,C) and (C,B) of every atom C that closes a triangle with A and B, with a bias from the
 third edge. Node outputs average the incoming messages. Compare against run 2.
 
+## Run 4: triangle attention with attention-weighted nodes
+
+In run 3, E_intra came out ~9 % worse than in run 2 at the first validations
+(val/loss/iqa_intra_a 2.06 vs 1.89 at step 542), while the pair losses were ~30 % lower.
+The likely cause is the node aggregation: run 2 sums each atom's incoming messages with
+learned per-head softmax weights, run 3 averages all 20-50 neighbours within 6 Å
+equally, which dilutes the few bonded ones. Run 4 sets
+`triangle_node_aggregation: attention`: the edges still use the triangle attention, the
+atoms the graph head's softmax weights.
+
 ## Validation metrics
 
 On top of the per-task `val/loss/<task>`, both runs log `val/mae/<name>` (eV). These are
@@ -135,7 +146,8 @@ for cfg in iqa_subterms_cx_so2gate_6A iqa_subterm_fractions_so2gate_6A; do
 done
 ```
 
-Run 3 was submitted the same way with `cfg=iqa_subterm_fractions_so2gate_triangle_6A`.
+Runs 3 and 4 were submitted the same way with `cfg=iqa_subterm_fractions_so2gate_triangle_6A`
+and `cfg=iqa_subterm_fractions_so2gate_triangle_attnnodes_6A`.
 
 Each run uses 4 GPUs at 800 atoms per GPU. That is the same global batch (3200 atoms) as
 the 2 x 1600 reruns and the 4 x 800 best-val resume of the 6 Å subterm model.
