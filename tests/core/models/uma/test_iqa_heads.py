@@ -21,6 +21,10 @@ from fairchem.core.models.uma.escn_md import (
 )
 from fairchem.core.models.uma.escn_md_block import smooth_degree
 from fairchem.core.models.uma.nn.activation import SeparableS2Activation
+from fairchem.core.models.uma.nn.triangle_attention import (
+    DensePairLayout,
+    EquivariantTriangleAttention,
+)
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
 
 BACKBONE_KWARGS = {
@@ -504,3 +508,169 @@ def test_intra_multi_term_head_shares_the_trunk(backbone_and_emb, no_frame_roll)
         out["iqa_intra_a"]["node_pred"],
         out["iqa_kinetic"]["node_pred"] + out["iqa_vne"]["node_pred"],
     )
+
+
+# -------- AlphaFold3 triangle attention --------
+
+
+def _triangle_head(
+    backbone: eSCNMDBackbone, **kwargs: bool | str
+) -> SO2EquivariantGraphAttentionNodeEdgePrediction:
+    """Triangle head with nonzero output projections, which start at zero (identity)."""
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(
+        backbone, attention_type="triangle", **kwargs
+    )
+    for block in (head.triangle_attention_starting, head.triangle_attention_ending):
+        torch.nn.init.normal_(block.to_out.weight)
+    return head
+
+
+def _triangle_reference(
+    block: EquivariantTriangleAttention,
+    x: torch.Tensor,
+    edge_index: torch.Tensor,
+    ending: bool,
+) -> torch.Tensor:
+    """AlphaFold3 Algorithms 14/15 as an explicit loop over edges and third atoms."""
+    num_edges, num_coefficients, _ = x.shape
+    heads, keys, values = block.num_heads, block.key_channels, block.value_channels
+    xn = block.norm(x)
+    s = xn[:, 0]
+    q, k = block.to_qk(s).view(num_edges, 2, heads, keys).unbind(1)
+    bias = block.to_bias(s)
+    v = block.to_value(xn).view(num_edges, num_coefficients, heads, values)
+    edge_of = {(i, j): e for e, (i, j) in enumerate(edge_index.T.tolist())}
+    out = torch.zeros_like(v)
+    for e, (i, j) in enumerate(edge_index.T.tolist()):
+        triangles = []
+        for c in range(int(edge_index.max()) + 1):
+            # (key/value edge, bias edge): (i, c) and (j, c), or (c, j) and (c, i)
+            kv, b = ((c, j), (c, i)) if ending else ((i, c), (j, c))
+            if kv in edge_of and b in edge_of:
+                triangles.append((edge_of[kv], edge_of[b]))
+        if not triangles:
+            continue
+        kv_edges = torch.tensor([t[0] for t in triangles])
+        b_edges = torch.tensor([t[1] for t in triangles])
+        logits = (q[e] * k[kv_edges]).sum(-1) / keys**0.5 + bias[b_edges]
+        weights = torch.softmax(logits, dim=0)  # [triangles, heads]
+        out[e] = torch.einsum("th,tlhd->lhd", weights, v[kv_edges])
+    out = out.reshape(num_edges, num_coefficients, -1)
+    return block.to_out(out * torch.sigmoid(block.to_gate(s)).unsqueeze(1))
+
+
+@pytest.mark.parametrize("ending", [False, True])
+def test_triangle_attention_matches_loop_reference(backbone_and_emb, ending: bool):
+    """Includes edges whose triangles are partly or entirely open, and checks that the
+    masked rows keep the gradients finite."""
+    _, batch, emb = backbone_and_emb
+    emb = _drop_edges(emb, torch.tensor([0, 1, 5, 9]))
+    edge_index = emb["edge_index"]
+    torch.manual_seed(0)
+    block = EquivariantTriangleAttention(
+        lmax=2,
+        channels=8,
+        num_heads=2,
+        key_channels=3,
+        value_channels=4,
+        norm_type="rms_norm_sh",
+    ).double()
+    torch.nn.init.normal_(block.to_out.weight)
+    x = torch.randn(edge_index.shape[1], 9, 8, dtype=torch.float64, requires_grad=True)
+    layout = DensePairLayout.from_graph(edge_index, batch.batch, batch.natoms)
+    out = block(x, layout.transpose() if ending else layout)
+    torch.testing.assert_close(out, _triangle_reference(block, x, edge_index, ending))
+    out.square().sum().backward()
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
+def test_dense_pair_layout_rejects_duplicate_pairs(backbone_and_emb):
+    _, batch, emb = backbone_and_emb
+    edge_index = torch.cat([emb["edge_index"], emb["edge_index"][:, :1]], dim=1)
+    with pytest.raises(ValueError, match="at most one edge"):
+        DensePairLayout.from_graph(edge_index, batch.batch, batch.natoms)
+
+
+def test_triangle_edges_see_the_third_atom(backbone_and_emb, no_frame_roll):
+    """Removing edge (B, C) leaves the graph attention message of (A, B) alone (it is
+    normalized over the edges *into* B) but changes the triangle attention one."""
+    backbone, batch, emb = backbone_and_emb
+    edge_index = emb["edge_index"]
+    a, b = edge_index[:, 0].tolist()
+    drop = ((edge_index[0] == b) & (edge_index[1] != a)).nonzero()[0]
+    dropped = _drop_edges(emb, drop)
+    for head, changes in (
+        (SO2EquivariantGraphAttentionNodeEdgePrediction(backbone), False),
+        (_triangle_head(backbone), True),
+    ):
+        with torch.no_grad():
+            full = head(batch, emb)["iqa_inter_ab"]["edge_pred"][0]
+            less = head(batch, dropped)["iqa_inter_ab"]["edge_pred"][0]
+        assert (not torch.allclose(full, less, atol=1e-6)) == changes
+
+
+def test_triangle_head_is_rotation_invariant(monkeypatch):
+    _fixed_roll(monkeypatch, 0.0)
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(**BACKBONE_KWARGS, ff_type="spectral")
+    head = _triangle_head(backbone, activation_type="so2_gate")
+    torch.manual_seed(1)
+    rotation = rand_matrix()
+    batch, rotated = _batch(), _batch(rotation)
+    with torch.no_grad():
+        out = head(batch, _scaled(backbone(batch), 30.0))
+        out_rot = head(rotated, _scaled(backbone(rotated), 30.0))
+    perm = match_edges_by_node_pairs(
+        out["iqa_inter_ab"]["edge_index"],
+        out_rot["iqa_inter_ab"]["edge_index"],
+        batch.num_nodes,
+    )
+    assert bool((perm >= 0).all())
+    torch.testing.assert_close(
+        out["iqa_inter_ab"]["edge_pred"],
+        out_rot["iqa_inter_ab"]["edge_pred"][perm],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    torch.testing.assert_close(
+        out["iqa_intra_a"]["node_pred"],
+        out_rot["iqa_intra_a"]["node_pred"],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
+def test_multitask_head_passes_attention_type_to_the_trunk(backbone_and_emb):
+    backbone, batch, emb = backbone_and_emb
+    head = IQA_MultiTaskSO2Head(
+        backbone,
+        node_task_names=["iqa_kinetic"],
+        edge_task_names=["iqa_vee_ab"],
+        symmetric_edge_task_names=["iqa_vee_ab"],
+        attention_type="triangle",
+    )
+    assert isinstance(
+        head.trunk.triangle_attention_ending, EquivariantTriangleAttention
+    )
+    with torch.no_grad():
+        out = head(batch, emb)
+    vee = out["iqa_vee_ab"]["edge_pred"]
+    assert torch.isfinite(vee).all()
+    assert torch.equal(vee, vee[_reverse(emb)])
+
+
+def test_attention_type_validation_and_default(backbone_and_emb):
+    backbone, _, _ = backbone_and_emb
+    head = SO2EquivariantGraphAttentionNodeEdgePrediction(backbone)
+    assert not [key for key in head.state_dict() if key.startswith("triangle")]
+    with pytest.raises(ValueError, match="attention_type"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(backbone, attention_type="axial")
+    with pytest.raises(ValueError, match="attention_gating"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, attention_type="triangle", attention_gating="sigmoid"
+        )
+    with pytest.raises(ValueError, match="use_s2_act_attn"):
+        SO2EquivariantGraphAttentionNodeEdgePrediction(
+            backbone, attention_type="triangle", use_s2_act_attn=True
+        )

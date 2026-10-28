@@ -48,6 +48,10 @@ from fairchem.core.models.uma.nn.radial import GaussianSmearing, RadialMLP
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
 from fairchem.core.models.uma.nn.so2_layers import SO2_Convolution
 from fairchem.core.models.uma.nn.so2_tp import SO2_Convolution_TensorProduct
+from fairchem.core.models.uma.nn.triangle_attention import (
+    DensePairLayout,
+    EquivariantTriangleAttention,
+)
 from fairchem.core.models.uma.nn.activation import (
     GateActivation,
     S2Activation_M,
@@ -1433,9 +1437,19 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         symmetric_edge_prediction: bool = False,
         reversed_edge_task_name: str | None = None,
         attention_gating: Literal["softmax", "sigmoid"] = "softmax",
+        attention_type: Literal["graph", "triangle"] = "graph",
     ) -> None:
         """
         Args (IQA additions):
+            attention_type: ``"graph"`` (default, the original head) scales each
+                edge message by a per-head weight from its own scalars (normalized
+                as set by ``attention_gating``). ``"triangle"`` replaces that by
+                AlphaFold3 triangle self-attention around the starting and ending
+                node (residual, see ``EquivariantTriangleAttention``), so the message
+                of edge (A, B) mixes in the edges (A, C) / (C, B) of every atom C
+                closing a triangle with A and B; node outputs then average the
+                incoming messages. Needs ``attention_gating="softmax"``, the triangle
+                softmax, and does not run under graph parallel.
             activation_type: nonlinearity between the two SO(2) convolutions, applied
                 in the edge frame (see ``_build_edge_frame_activation``):
                 ``"so2_gate"`` is exactly equivariant under the roll of the edge frame
@@ -1481,6 +1495,19 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         if attention_gating not in ("softmax", "sigmoid"):
             raise ValueError(f"Unknown attention_gating {attention_gating}")
         self.attention_gating = attention_gating
+        if attention_type not in ("graph", "triangle"):
+            raise ValueError(f"Unknown attention_type {attention_type}")
+        if attention_type == "triangle" and attention_gating != "softmax":
+            raise ValueError(
+                "attention_gating only applies to attention_type='graph'; the triangle "
+                "attention is a softmax over the triangles."
+            )
+        if attention_type == "triangle" and use_s2_act_attn:
+            raise ValueError(
+                "use_s2_act_attn computes graph attention weights; it cannot be "
+                "combined with attention_type='triangle'."
+            )
+        self.attention_type = attention_type
 
         # === EBDM-origin: Parameter initialization ===
         self.backbone = backbone
@@ -1589,7 +1616,13 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             self.num_irreps_passed += 2 * l + 1
 
         # === EBDM-origin: Attention mechanism setup ===
-        if self.use_s2_act_attn:
+        # The graph attention weights come from these extra m=0 outputs of so2_conv_1.
+        self.num_alpha_channels = (
+            self.num_heads * self.attn_alpha_channels
+            if self.attention_type == "graph"
+            else 0
+        )
+        if self.use_s2_act_attn or self.attention_type == "triangle":
             self.alpha_norm = None
             self.alpha_act = None
             self.alpha_dot = None
@@ -1597,7 +1630,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             self.alpha_norm = nn.LayerNorm(self.attn_alpha_channels)
         else:
             self.alpha_norm = nn.Identity()
-        if not self.use_s2_act_attn:
+        if not self.use_s2_act_attn and self.attention_type == "graph":
             self.alpha_act = SmoothLeakyReLU()
             self.alpha_dot = nn.Parameter(
                 torch.randn(self.num_heads, self.attn_alpha_channels)
@@ -1610,7 +1643,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # === EBDM-origin: SO(2) convolution setup ===
         extra_m0_output_channels = None
         if not self.use_s2_act_attn:
-            extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
+            extra_m0_output_channels = self.num_alpha_channels
             if self.activation_type == "gate":
                 extra_m0_output_channels += max(self.lmax_list) * self.hidden_channels
             elif self.activation_type in ("legacy_sep_s2", "sep_s2", "so2_gate"):
@@ -1662,6 +1695,23 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             edge_channels_list=None,
             extra_m0_output_channels=self.num_heads if self.use_s2_act_attn else None,
         )
+
+        if self.attention_type == "triangle":
+            triangle_kwargs = {
+                "lmax": self.lmax_list[0],
+                "channels": self.num_heads * self.attn_value_channels,
+                "num_heads": self.num_heads,
+                "key_channels": self.attn_alpha_channels,
+                "value_channels": self.attn_value_channels,
+                "norm_type": backbone.norm_type,
+                "dropout": alpha_drop,
+            }
+            self.triangle_attention_starting = EquivariantTriangleAttention(
+                **triangle_kwargs
+            )
+            self.triangle_attention_ending = EquivariantTriangleAttention(
+                **triangle_kwargs
+            )
 
         # === EBDM-origin: Output projection layers ===
         # FAIRCHEM ADAPTATION: Use SO3_Linear instead of SO3_LinearV2 (fairchem's version).
@@ -1837,7 +1887,7 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
 
         # === Activation between SO(2) convolutions (see _build_edge_frame_activation) ===
-        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        x_alpha_num_channels = self.num_alpha_channels
         if self.use_s2_act_attn:
             x_message = self.act(x_message)
         elif self.activation_type == "s2":
@@ -1856,6 +1906,11 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
         else:
             x_message = self.so2_conv_2(x_message, x_edge)
+
+        if self.attention_type == "triangle":
+            # Triangles mix edges with different frames, so attend in the global one.
+            x_message = torch.bmm(wigner_inv, x_message)
+            return self.apply_triangle_attention(data, edge_index, x_message)
 
         # === EBDM-origin: Attention weight computation ===
         # Compute per-head scalar attention weights from m=0 (scalar) coefficients.
@@ -1894,6 +1949,18 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         # Apply inverse Wigner matrix to map from edge-aligned back to global frame.
         x_message = torch.bmm(wigner_inv, x_message)
         return x_message
+
+    def apply_triangle_attention(
+        self, data: AtomicData, edge_index: torch.Tensor, x_message: torch.Tensor
+    ) -> torch.Tensor:
+        """Residual triangle attention around the starting, then the ending node."""
+        if gp_utils.initialized():
+            raise NotImplementedError(
+                "Triangle attention is not implemented under graph parallel."
+            )
+        layout = DensePairLayout.from_graph(edge_index, data["batch"], data["natoms"])
+        x_message = x_message + self.triangle_attention_starting(x_message, layout)
+        return x_message + self.triangle_attention_ending(x_message, layout.transpose())
 
     def reversed_edge_messages(
         self,
@@ -1936,9 +2003,18 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
         With softmax attention the weights already sum to one per node. With sigmoid
         gating each message is weighted by the cutoff envelope (smooth in the
         positions) and the sum is divided by sqrt of the smooth neighbour count.
+        Triangle attention does not weight the edges per node, so they are averaged.
         """
         edge_index = emb["edge_index"]
         num_nodes = emb["node_embedding"].shape[0]
+        if self.attention_type == "triangle":
+            return torch_geometric.utils.scatter(
+                x_message.float(),
+                edge_index[1],
+                dim=0,
+                dim_size=num_nodes,
+                reduce="mean",
+            )
         if self.attention_gating == "softmax":
             return _scatter_to_nodes_fp32(x_message, edge_index, num_nodes)
         distance = torch.linalg.norm(emb["edge_distance_vec"].float(), dim=-1)
