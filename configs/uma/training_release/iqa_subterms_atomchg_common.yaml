@@ -147,6 +147,7 @@ runner:
     _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
     job_config: ${job}
     tasks: ${tasks}
+    derived_metrics: ${derived_metrics}
     model:
       _target_: fairchem.core.models.base.HydraModel
       backbone: ${backbone}

@@ -71,6 +71,27 @@ Known limitations:
   The fraction loss weights all atoms equally, so this model is not expected to beat
   run 1 on absolute intra subterms.
 
+## Validation metrics
+
+On top of the per-task `val/loss/<task>`, both runs log `val/mae/<name>` (eV). These are
+exact MAEs over the whole val set, built from several task predictions
+(`units/mlip_unit/derived_metrics.py`, configured in `derived_metrics/<tasks file>.yaml`):
+
+| Key | Run 1 | Run 2 |
+|---|---|---|
+| `total_energy` | sum of all predicted subterms, incl. the analytic V_nn | sum_A E_intra + sum_(A,B) E_inter/2 |
+| `iqa_kinetic`, ..., `iqa_vee_x_ab` | the predicted subterms | f_X · E_intra and g_X · V_nn/2 |
+
+The subterm keys are the same in both runs, so the two can be compared directly. The other
+subterm and intra/inter configs log `total_energy` too.
+
+`total_energy` is compared against e_total. It therefore includes the E_inter of the pairs
+beyond the otf cutoff, which the model never sees. On 300 val molecules that is a mean
+|.| of 0.31 eV per molecule at 6 Å (max 12.8 eV, larger for ions) and 0.03 eV at 8 Å. The
+IQA sum itself matches e_total to 0.011 eV. With the labels fed back as predictions,
+`total_energy` comes out at 0.54 eV on a 6 Å graph (20 val molecules), and the subterms
+reconstructed from the fractions at < 1e-4 eV.
+
 ## References and normalizers
 
 `element_refs/iqa_isolated_atom_elem_refs.yaml` was regenerated with

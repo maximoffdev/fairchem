@@ -6,6 +6,7 @@
 defaults:
   - iqa_subterms_atomchg_common
   - tasks: iqa_decompose_subterm_fractions
+  - derived_metrics: iqa_decompose_subterm_fractions
   - _self_
 
 job:

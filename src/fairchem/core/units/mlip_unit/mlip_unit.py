@@ -58,6 +58,7 @@ from fairchem.core.units.mlip_unit._metrics import Metrics, get_metrics_fn
 from fairchem.core.units.mlip_unit.api.inference import (
     MLIPInferenceCheckpoint,
 )
+from fairchem.core.units.mlip_unit.derived_metrics import TaskPrediction
 from fairchem.core.units.mlip_unit.utils import (
     apply_task_references,
     load_inference_model,
@@ -67,6 +68,8 @@ from fairchem.core.units.mlip_unit.utils import (
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
+
+    from fairchem.core.units.mlip_unit.derived_metrics import DerivedMAE
 
 # this is a config generated on the fly and can be used to resume a run for a given checkpoint
 UNIT_RESUME_CONFIG = "resume.yaml"
@@ -283,6 +286,54 @@ def get_task_target(
     return target
 
 
+def get_edge_system(
+    batch: AtomicData, edge_alignment: EdgeAlignment | None
+) -> torch.Tensor:
+    """The system index of each edge an edge task predicted on."""
+    if edge_alignment is not None:
+        return edge_alignment.edge_system
+    systems = torch.arange(batch.natoms.numel(), device=batch.nedges.device)
+    return torch.repeat_interleave(systems, batch.nedges.long())
+
+
+def get_physical_prediction(
+    task: Task, predictions: dict[str, torch.Tensor], batch: AtomicData
+) -> torch.Tensor:
+    """The task's prediction denormalized and with its references added back."""
+    pred = task.normalizer.denorm(predictions[task.name][task.property])
+    return undo_task_references(task, batch, pred, predictions)
+
+
+def get_task_predictions(
+    tasks: Sequence[Task], predictions: dict[str, torch.Tensor], batch: AtomicData
+) -> dict[str, TaskPrediction]:
+    """The physical predictions of scalar atom and edge tasks, with the system of
+    each row, as consumed by the derived metrics."""
+    edge_alignments = get_edge_alignments(batch, predictions, tasks)
+    task_predictions = {}
+    for task in tasks:
+        if task.level == "atom":
+            edge_alignment = None
+            system_index = batch.batch
+        elif task.level == "edge":
+            edge_alignment = edge_alignments[task.name]
+            system_index = get_edge_system(batch, edge_alignment)
+        else:
+            raise ValueError(f"Task '{task.name}' is neither an atom nor an edge task")
+        values = get_physical_prediction(task, predictions, batch)
+        if values.numel() != system_index.numel():
+            raise ValueError(
+                f"Task '{task.name}' predicts shape {tuple(values.shape)}, expected "
+                f"one scalar per {task.level} ({system_index.numel()})"
+            )
+        task_predictions[task.name] = TaskPrediction(
+            value=values.reshape(-1),
+            system_index=system_index,
+            edge_alignment=edge_alignment,
+        )
+    return task_predictions
+
+
 def get_output_mask(
     batch: AtomicData, task: Task, edge_alignment: EdgeAlignment | None = None
 ) -> dict[str, torch.Tensor]:
@@ -326,10 +377,7 @@ def get_output_mask(
             )
         elif task.level == "edge":
             # expand per-graph mask (B,) → (E,)
-            if edge_alignment is not None:
-                dset_mask = dset_mask[edge_alignment.edge_system]
-            else:
-                dset_mask = torch.repeat_interleave(dset_mask, batch.nedges.long())
+            dset_mask = dset_mask[get_edge_system(batch, edge_alignment)]
             # Ensure mask is at least 1D after checking finite values
             if output_masks[task.name].dim() > 1:
                 output_masks[task.name] = output_masks[task.name].all(dim=-1)
@@ -482,7 +530,9 @@ def compute_metrics(
         natoms_masked = batch.natoms[output_mask.all(dim=1)]
         output_size = output_mask.sum()
     elif task.level == "edge":
-        natoms_masked = torch.ones_like(output_mask, dtype=torch.long, device=output_mask.device)
+        natoms_masked = torch.ones_like(
+            output_mask, dtype=torch.long, device=output_mask.device
+        )
         output_size = output_mask.sum()
     else:
         natoms_masked = batch.natoms[output_mask]
@@ -493,11 +543,7 @@ def compute_metrics(
         return {metric_name: Metrics() for metric_name in task.metrics}
 
     target_masked = get_task_target(batch, task, edge_alignment)[output_mask]
-    pred = predictions[task.name][task.property].clone()
-    # denormalize the prediction
-    pred = task.normalizer.denorm(pred)
-    pred = undo_task_references(task, batch, pred, predictions)
-    pred_masked = pred[output_mask]
+    pred_masked = get_physical_prediction(task, predictions, batch)[output_mask]
 
     # reshape: (num_atoms_in_batch, -1) or (num_systems_in_batch, -1)
     # if task.level == "atom" or "stress" not in task.name:
@@ -656,6 +702,7 @@ class MLIPTrainEvalUnit(
         debug_checksums_save_path: str | None = None,
         profile_flops: bool = False,
         save_inference_ckpt: bool = True,
+        derived_metrics: Sequence[DerivedMAE] = (),
     ):
         super().__init__()
         self.job_config = job_config
@@ -766,7 +813,12 @@ class MLIPTrainEvalUnit(
             raise ValueError(f"Unknown Training Strategy {train_strategy}")
 
         # setup eval unit, make it share the same model as this unit and turn off the logger
-        self.eval_unit = MLIPEvalUnit(job_config=job_config, model=None, tasks=tasks)
+        self.eval_unit = MLIPEvalUnit(
+            job_config=job_config,
+            model=None,
+            tasks=tasks,
+            derived_metrics=derived_metrics,
+        )
         eval_model = self.ema_model if self.ema_model is not None else self.model
         self.eval_unit.setup_train_eval_unit(eval_model)
 
@@ -850,7 +902,9 @@ class MLIPTrainEvalUnit(
                 with record_function("forward"):
                     pred = self.model.forward(batch_on_device)
                 with record_function("compute_loss"):
-                    loss_dict, denorm_loss_dict = compute_loss(self.tasks, pred, batch_on_device)
+                    loss_dict, denorm_loss_dict = compute_loss(
+                        self.tasks, pred, batch_on_device
+                    )
             scalar_loss = sum(loss_dict.values())
             self.optimizer.zero_grad()
             with record_function("backward"):
@@ -1051,6 +1105,7 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
         model: torch.nn.Module,
         tasks: Sequence[Task],
         bf16: bool = False,
+        derived_metrics: Sequence[DerivedMAE] = (),
     ):
         """Evaluate your MLIPs and so forth.
 
@@ -1059,6 +1114,8 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             model: model to evaluate
             evaluations: a list of evaluation objects
             bf16: whether to use autocast with bf16
+            derived_metrics: metrics on quantities built from several task
+                predictions, logged as val/mae/<name>
         """
         super().__init__()
         self.job_config = job_config
@@ -1069,8 +1126,23 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             if task.element_references is not None:
                 task.element_references.to(torch.device(get_device_for_local_rank()))
 
+        self.derived_metrics = list(derived_metrics)
+        names = [metric.name for metric in self.derived_metrics]
+        if len(set(names)) != len(names):
+            raise ValueError(f"Derived metric names must be unique, got {names}")
+        task_levels = {task.name: task.level for task in self.tasks}
+        for metric in self.derived_metrics:
+            metric.check_task_levels(task_levels)
+        derived_task_names = {
+            t for metric in self.derived_metrics for t in metric.tasks
+        }
+        self.derived_metric_tasks = [
+            task for task in self.tasks if task.name in derived_task_names
+        ]
+
         # dictionary of metrics for each dataset, split, task, and metric
         self.running_metrics: dict[str, dict[str, dict[str, Metrics]]] = {}
+        self.running_derived_metrics: dict[str, Metrics] = {}
         self.running_loss_metrics: dict[str, Metrics] = {}
         self.total_loss_metrics: Metrics = Metrics()
         self.total_atoms: int = 0
@@ -1113,6 +1185,9 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
                 )
             }
             for task in self.tasks
+        }
+        self.running_derived_metrics = {
+            metric.name: Metrics() for metric in self.derived_metrics
         }
         self.running_loss_metrics = {task.name: Metrics() for task in self.tasks}
         self.total_loss_metrics = Metrics()
@@ -1158,6 +1233,16 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             self.running_loss_metrics[task.name] += Metrics(
                 metric=loss_value, total=loss_value, numel=1
             )
+
+        if self.derived_metrics:
+            task_predictions = get_task_predictions(
+                self.derived_metric_tasks, preds, data
+            )
+            for metric in self.derived_metrics:
+                batch_metrics = metric(data, task_predictions)
+                # Metrics.__iadd__ divides by numel, so skip batches without labels
+                if batch_metrics.numel > 0:
+                    self.running_derived_metrics[metric.name] += batch_metrics
 
         # get the datasets with split names
         datasets_in_batch = set(data.dataset_name)
@@ -1211,6 +1296,13 @@ class MLIPEvalUnit(EvalUnit[AtomicData]):
             total = distutils.all_reduce(metrics.total, average=False, device=device)
             numel = distutils.all_reduce(metrics.numel, average=False, device=device)
             log_dict[f"val/loss/{task}"] = total / numel
+
+        for name, metrics in self.running_derived_metrics.items():
+            total = distutils.all_reduce(metrics.total, average=False, device=device)
+            numel = distutils.all_reduce(metrics.numel, average=False, device=device)
+            if numel == 0:
+                raise ValueError(f"Derived metric '{name}' found no labels in val")
+            log_dict[f"val/mae/{name}"] = total / numel
 
         total_runtime = distutils.all_reduce(
             self.total_runtime, average=False, device=device

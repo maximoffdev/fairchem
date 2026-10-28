@@ -5,6 +5,7 @@
 defaults:
   - iqa_subterms_atomchg_common
   - tasks: iqa_decompose_subterms_cx
+  - derived_metrics: iqa_decompose_subterms_cx
   - _self_
 
 job:

@@ -2,6 +2,7 @@ defaults:
   - cluster: leipzig_cluster
   - dataset: iqa_intra_inter
   - tasks: iqa_decompose_intra_inter
+  - derived_metrics: iqa_decompose_intra_inter
   - backbone: K4L2
   - element_refs: iqa_isolated_atom_elem_refs
   - _self_
@@ -140,6 +141,7 @@ runner:
     _target_: fairchem.core.units.mlip_unit.mlip_unit.MLIPTrainEvalUnit
     job_config: ${job}
     tasks: ${tasks}
+    derived_metrics: ${derived_metrics}
     model:
       _target_: fairchem.core.models.base.HydraModel
       backbone: ${backbone}
