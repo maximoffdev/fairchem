@@ -253,3 +253,74 @@ class SeparableS2Activation_M(torch.nn.Module):
             ),
             dim=1,
         )
+
+
+class SO2InvariantGatedActivation(torch.nn.Module):
+    """Exactly SO(2)-equivariant nonlinearity for m-ordered edge-frame coefficients.
+
+    Under a rotation by ``gamma`` about the edge axis every m=0 coefficient (of any
+    degree l) is invariant and each m>0 (real, imaginary) pair rotates by ``m*gamma``,
+    so the pair's modulus is invariant and scaling the pair by a scalar commutes with
+    the rotation. A small MLP shared across channels maps the invariants [m=0 block,
+    pair moduli, gating scalar] to a residual update of the m=0 coefficients and one
+    sigmoid gate per pair. Unlike the gate activation, m!=0 information therefore
+    reaches the m=0 (and hence scalar) outputs; unlike the grid S2 activation there
+    is no quadrature, so equivariance holds to floating-point precision.
+
+    Expects the ``CoefficientMapping.to_m`` layout: the m=0 rows (lmax+1), then for
+    each m=1..mmax the real rows (lmax-m+1) followed by the imaginary rows.
+    """
+
+    def __init__(self, lmax: int, mmax: int, hidden_channels: int = 32) -> None:
+        super().__init__()
+        self.lmax = lmax
+        self.mmax = mmax
+        self.num_m0 = lmax + 1
+        self.pair_sizes = [lmax - m + 1 for m in range(1, mmax + 1)]
+        self.num_pairs = sum(self.pair_sizes)
+        self.num_coefficients = self.num_m0 + 2 * self.num_pairs
+        num_invariants = self.num_m0 + self.num_pairs + 1
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(num_invariants, hidden_channels),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_channels, self.num_m0 + self.num_pairs),
+        )
+
+    def forward(
+        self, gating_scalars: torch.Tensor, input_tensors: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        `gating_scalars`: shape [N, num_channels]
+        `input_tensors`: shape [N, num_coefficients, num_channels], m-ordered
+        """
+        if input_tensors.shape[1] != self.num_coefficients:
+            raise ValueError(
+                f"Expected {self.num_coefficients} m-ordered coefficients for "
+                f"lmax={self.lmax}, mmax={self.mmax}, got {input_tensors.shape[1]}."
+            )
+        x_m0 = input_tensors.narrow(1, 0, self.num_m0)
+        reals: list[torch.Tensor] = []
+        imags: list[torch.Tensor] = []
+        moduli: list[torch.Tensor] = []
+        offset = self.num_m0
+        for size in self.pair_sizes:
+            real = input_tensors.narrow(1, offset, size)
+            imag = input_tensors.narrow(1, offset + size, size)
+            reals.append(real)
+            imags.append(imag)
+            moduli.append(torch.sqrt(real * real + imag * imag + 1e-12))
+            offset += 2 * size
+
+        invariants = torch.cat(
+            (x_m0, *moduli, gating_scalars.unsqueeze(1)), dim=1
+        ).transpose(1, 2)  # [N, num_channels, num_invariants]
+        update = self.mlp(invariants).transpose(1, 2)
+        gates = torch.sigmoid(update.narrow(1, self.num_m0, self.num_pairs))
+
+        outputs = [x_m0 + update.narrow(1, 0, self.num_m0)]
+        gate_offset = 0
+        for real, imag, size in zip(reals, imags, self.pair_sizes):
+            gate = gates.narrow(1, gate_offset, size)
+            outputs.extend((real * gate, imag * gate))
+            gate_offset += size
+        return torch.cat(outputs, dim=1)

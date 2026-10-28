@@ -1,0 +1,205 @@
+# tasks/iqa_decompose_subterms with V_ee split into its classical (Coulomb) and
+# exchange-correlation parts, intra-atomic and pairwise:
+#   V_ee(A,A) = V_ee^C(A,A) + V_ee^X(A,A),   V_ee(A,B) = V_ee^C(A,B) + V_ee^X(A,B).
+# E_intra(A) = T + V_ne + V_ee^C + V_ee^X (A,A) and
+# E_inter(A,B)/2 = (V_ne + V_en + V_nn + V_ee^C + V_ee^X)(A,B)/2 are not predicted.
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_kinetic
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_kinetic}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_kinetic_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_kinetic}
+    rmsd: ${normalizer_rmsd_iqa_kinetic}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vne}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vne_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne}
+    rmsd: ${normalizer_rmsd_iqa_vne}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_c
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vee_c}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_c_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_c}
+    rmsd: ${normalizer_rmsd_iqa_vee_c}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_x
+  level: atom
+  property: node_pred
+  datasets: ${dataset_list}
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.AtomElementReferences
+    element_references:
+      _target_: torch.DoubleTensor
+      _args_:
+        - ${element_refs.iqa_vee_x}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_x_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_x}
+    rmsd: ${normalizer_rmsd_iqa_vee_x}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vne_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  # learn the residual to the neutral-atom Coulomb term -Z_A Z_B / 2R
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: -1
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vne_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne_ab}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_ven_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  # V_en(A,B) = V_ne(B,A) exactly: the head emits the V_ne prediction of the reversed
+  # edge, so the references and normalizer must equal V_ne's.
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: -1
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_ven_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vne_ab}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_c_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  # learn the residual to the neutral-atom Coulomb term +Z_A Z_B / 2R
+  element_references:
+    _target_: fairchem.core.modules.normalization.element_references.NeutralPointChargeEdgeReferences
+    sign: 1
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_c_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_c_ab}
+    rmsd: ${normalizer_rmsd_iqa_vee_c_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+# Exchange has no point-charge analogue: learned raw.
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vee_x_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vee_x_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vee_x_ab}
+    rmsd: ${normalizer_rmsd_iqa_vee_x_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32
+
+- _target_: fairchem.core.units.mlip_unit.mlip_unit.Task
+  name: iqa_vnn_ab
+  level: edge
+  property: edge_pred
+  datasets: ${dataset_list}
+  loss_fn:
+    _target_: fairchem.core.modules.loss.DDPMTLoss
+    loss_fn:
+      _target_: fairchem.core.modules.loss.MAELoss
+    coefficient: ${iqa_vnn_ab_coef}
+  normalizer:
+    _target_: fairchem.core.modules.normalization.normalizer.Normalizer
+    mean: ${normalizer_mean_iqa_vnn_ab}
+    rmsd: ${normalizer_rmsd_iqa_vnn_ab}
+  out_spec:
+    dim: [1]
+    dtype: float32

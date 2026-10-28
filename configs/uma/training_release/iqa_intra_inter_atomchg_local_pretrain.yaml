@@ -1,0 +1,33 @@
+# Intra/inter with per-atom charge conditioning (sigma 0.05) on the locality-oriented
+# architecture, aimed at transferring to larger systems than the training molecules
+# (same set-up as iqa_subterms_atomchg_local_pretrain.yaml):
+# - backbone strictly local: neighbours enter every layer only through their fixed
+#   species + charge embedding, so an atom sees one 8 A cutoff at any depth (instead
+#   of 4 layers x cutoff ~ 32 A);
+# - backbone message sums divided by sqrt(smooth neighbour count), with an explicit
+#   log-degree feature, so feature scales do not grow with the number of neighbours;
+# - the shared E_intra / E_inter head uses sigmoid instead of softmax attention, so a
+#   pair's energy does not depend on how many other neighbours its atoms have.
+# Same K4L2 sizes (plus a small degree MLP), normalizations and references as
+# iqa_intra_inter_atomchg_pretrain.yaml.
+defaults:
+  - iqa_intra_inter_atomchg_pretrain
+  - _self_
+
+job:
+  run_name: le-intra_inter_strictlocal_sqrtdeg_sigmoidattn_atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_8A_40h
+
+cutoff_radius: 8.0  # A; otf graph and radial basis cutoff
+
+backbone:
+  aggregation_norm: sqrt_degree
+  degree_embedding: True
+  strictly_local: True
+
+heads:
+  iqa_combined_head:
+    attention_gating: sigmoid
+
+dataset:
+  iqa_train:
+    sigma_atomic_charge: 0.05

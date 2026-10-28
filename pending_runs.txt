@@ -1,0 +1,44 @@
+# Pending runs on the Leipzig cluster (clara), as of 2026-10-09, to be restarted on the Dresden cluster.
+# 22 runs. All configs are committed on branch iqa-dev (HEAD 6c5bfa87, pushed to origin).
+#
+# Run each command from the fairchem repo root with the fairchem environment active.
+# The configs default to cluster=leipzig_cluster: on Dresden append cluster=<dresden cluster config>
+# (with its data_root_dir pointing at the copied sumformulasplit/). The cluster.timeout_hr /
+# cluster.max_atoms overrides below fix the values these runs were submitted with; keep them.
+# The kfold runs need sumformulasplit/kfold4_sumformula.csv in the data_root_dir.
+
+## Energy / dipole models, 8 A cutoff, 40 h, max_atoms 450 (submitted from 5f133989)
+# leipzig slurm id 28311365: le-subterms_sharedtrunk_nochargecond_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_subterms_nochg_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-subterms_sharedtrunk_nochargecond_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311366: le-subterms_sharedtrunk_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_subterms_atomchg_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-subterms_sharedtrunk_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311367: le-subterms_sharedtrunk_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_subterms_atomchg_sigma0p1_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-subterms_sharedtrunk_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311368: le-intra_inter_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_intra_inter_atomchg_sigma0p1_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-intra_inter_atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311369: le-1-1-mean_and_rmsd_norm_all_train-with_ref_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_intra_inter_atomchg_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-1-1-mean_and_rmsd_norm_all_train-with_ref_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311370: le-intra_inter_totalchargecond_qpred_qsum_qinterbaseline_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_intra_inter_qpred_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=le-intra_inter_totalchargecond_qpred_qsum_qinterbaseline_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311371: dipole-atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_dipole_atomchg_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=dipole-atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+# leipzig slurm id 28311372: dipole-atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_dipole_atomchg_sigma0p1_pretrain.yaml cutoff_radius=8.0 cluster.timeout_hr=40 cluster.max_atoms=450 job.run_name=dipole-atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_8A_40h
+
+## Charge models, full train split, K2L2_48, 4 A, 14 h, max_atoms 600
+# leipzig slurm id 28313189: charge-K2L2-48ch-fulltrain_totalchargecond_qsum_lagcut5e-4_otf_300neighbors_4A_14h
+fairchem -c configs/uma/training_release/iqa_charge_fulltrain.yaml
+# leipzig slurm id 28313191: charge-K2L2-48ch-fulltrain_nochargecond_noqsum_lagcut5e-4_otf_300neighbors_4A_14h
+fairchem -c configs/uma/training_release/iqa_charge_nochg_fulltrain.yaml
+
+## Locality-oriented energy models (strictly local, sqrt-degree, sigmoid attention), K4L2, 8 A, 40 h, max_atoms 450 (submitted from 4e79f0da)
+# leipzig slurm id 28314882: le-intra_inter_strictlocal_sqrtdeg_sigmoidattn_atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_intra_inter_atomchg_local_pretrain.yaml cluster.timeout_hr=40 cluster.max_atoms=450
+# leipzig slurm id 28314885: le-subterms_sharedtrunk_strictlocal_sqrtdeg_sigmoidattn_atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_8A_40h
+fairchem -c configs/uma/training_release/iqa_subterms_atomchg_local_pretrain.yaml cluster.timeout_hr=40 cluster.max_atoms=450
+
+## Locality-oriented charge models (strictly local, sqrt-degree), K2L2_48, full train, 4 A, 14 h, max_atoms 600, no q(A) sum constraint
+# leipzig slurm id 28314911: charge-K2L2-48ch-fulltrain_strictlocal_sqrtdeg_totalchargecond_noqsum_lagcut5e-4_otf_300neighbors_4A_14h
+fairchem -c configs/uma/training_release/iqa_charge_local_fulltrain.yaml
+# leipzig slurm id 28314914: charge-K2L2-48ch-fulltrain_strictlocal_sqrtdeg_nochargecond_noqsum_lagcut5e-4_otf_300neighbors_4A_14h
+fairchem -c configs/uma/training_release/iqa_charge_nochg_local_fulltrain.yaml
