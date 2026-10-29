@@ -13,6 +13,7 @@ Both inherit the task-independent `iqa_subterms_atomchg_common.yaml`.
 | 2 | `iqa_subterm_fractions_so2gate_6A.yaml` | E_intra, E_inter and each subterm as a fraction |
 | 3 | `iqa_subterm_fractions_so2gate_triangle_6A.yaml` | as run 2, with triangle attention in the head |
 | 4 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_6A.yaml` | as run 3, with attention-weighted node aggregation |
+| 5 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_lmax4_6A.yaml` | run 4 with lmax 4, more regularization |
 
 ## Identities in the labels
 
@@ -92,6 +93,20 @@ equally, which dilutes the few bonded ones. Run 4 sets
 `triangle_node_aggregation: attention`: the edges still use the triangle attention, the
 atoms the graph head's softmax weights.
 
+## Run 5: run 4 with lmax 4
+
+At step 47490 run 4 led run 2 by ~5 % in val/loss (0.0401 vs 0.0421); the early
+30-40 % pair advantage of the triangle attention was mostly faster convergence. Run 2
+stopped improving after ~80k steps (val 0.0404, then 0.0409 at 140k) while its train
+loss kept falling to 0.0164, so the K4L2 models are not capacity-limited. Part of that
+gap may be label noise: val does not mask poorly integrated atoms, train does.
+
+Run 5 raises the angular resolution, the axis most relevant to the IQA pair terms (atomic
+dipoles and quadrupoles): lmax 2 -> 4 (mmax stays 2) and 64 -> 128 radial basis
+functions. Against the overfitting it halves the learning rate (4e-4), raises the weight
+decay 10x (1e-2) and adds `alpha_drop: 0.1` on the attention weights. Submitted with
+`cluster.timeout_hr=60`, without a memory test.
+
 ## Validation metrics
 
 On top of the per-task `val/loss/<task>`, both runs log `val/mae/<name>` (eV). These are
@@ -148,6 +163,8 @@ done
 
 Runs 3 and 4 were submitted the same way with `cfg=iqa_subterm_fractions_so2gate_triangle_6A`
 and `cfg=iqa_subterm_fractions_so2gate_triangle_attnnodes_6A`.
+Run 5 likewise with `cfg=iqa_subterm_fractions_so2gate_triangle_attnnodes_lmax4_6A` and
+`cluster.timeout_hr=60`.
 
 Each run uses 4 GPUs at 800 atoms per GPU. That is the same global batch (3200 atoms) as
 the 2 x 1600 reruns and the 4 x 800 best-val resume of the 6 Å subterm model.
