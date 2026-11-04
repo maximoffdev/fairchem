@@ -1,0 +1,15 @@
+# iqa_subterm_fractions_so2gate_triangle_6A with attention-weighted node aggregation:
+# the edge outputs still come from the triangle attention, but each atom sums its
+# incoming messages with the per-head softmax attention of the graph head instead of
+# averaging them. Tests whether the plain mean caused the worse E_intra.
+# See IQA_SUBTERMS_CX_2026-10.md.
+defaults:
+  - iqa_subterm_fractions_so2gate_triangle_6A
+  - _self_
+
+job:
+  run_name: le-subterm_fractions_sharedtrunk_so2gate_triangleattn_attnnodeagg_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_6A_36h
+
+heads:
+  iqa_subterms_head:
+    triangle_node_aggregation: attention

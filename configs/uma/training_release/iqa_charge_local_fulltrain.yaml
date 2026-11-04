@@ -1,0 +1,18 @@
+# q(A) model conditioned on the total charge, without the q(A) sum constraint, on the
+# locality-oriented backbone of iqa_subterms_atomchg_local_pretrain.yaml (strictly
+# local, sqrt-degree aggregation, log-degree feature) at K2L2_48 size.
+defaults:
+  - iqa_charge_fulltrain
+  - _self_
+
+job:
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-fulltrain_strictlocal_sqrtdeg_totalchargecond_noqsum_lagcut5e-4_otf_300neighbors_4A_${cluster.timeout_hr}h
+
+backbone:
+  aggregation_norm: sqrt_degree
+  degree_embedding: True
+  strictly_local: True
+
+heads:
+  iqa_charge:
+    conserve_total_charge: False

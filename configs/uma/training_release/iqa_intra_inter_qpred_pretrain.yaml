@@ -1,0 +1,38 @@
+# Run 6: intra/inter model conditioned on the total charge that also predicts q(A)
+# (summing to the total charge) and learns E_inter(A,B)/2 as the residual to the
+# Coulomb term of its own predicted charges, q_A q_B / 2R
+# (tasks/iqa_decompose_intra_inter_charge.yaml).
+defaults:
+  - iqa_intra_inter_pretrain
+  - override tasks: iqa_decompose_intra_inter_charge
+  - _self_
+
+job:
+  run_name: le-intra_inter_totalchargecond_qpred_qsum_qinterbaseline_lagcut5e-4_otf_300neighbors_9A_40h
+
+# Residual of E_inter(A,B)/2 after q_A q_B / 2R with the AIM charges, which the
+# predicted charges converge to (iqa_compute_normalizers.py, charge_referenced).
+normalizer_mean_iqa_inter_ab: -0.513034
+normalizer_rmsd_iqa_inter_ab: 1.5088  # raw: 2.68978
+# True: the energy loss does not pull q(A) away from its labels (see
+# PredictedChargeEdgeReferences); False trains the charges end to end.
+detach_predicted_charges: True
+# = 1 / rmsd(q) (0.639 e): the loss weight a fitted normalizer would give, which the
+# identity charge normalizer cannot.
+iqa_charge_coef: 1.56
+
+dataset:
+  iqa_train:
+    key_mapping:
+      iqa_charge: q(A)
+  iqa_val:
+    key_mapping:
+      iqa_charge: q(A)
+
+heads:
+  iqa_charge:
+    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
+    dropout: 0.0
+    conserve_total_charge: True
+    # task-keyed output, as the model passes head outputs through
+    task_name: iqa_charge

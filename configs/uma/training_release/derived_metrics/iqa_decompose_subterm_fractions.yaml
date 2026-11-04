@@ -1,0 +1,46 @@
+# Validation metrics on quantities built from several task predictions, logged as
+# val/mae/<name> (fairchem.core.units.mlip_unit.derived_metrics). The total energy is
+# compared against e_total, so it includes the E_inter of the pairs beyond the otf
+# cutoff, which the model does not predict (see IQA_SUBTERMS_CX_2026-10.md).
+
+# E = sum_A E_intra(A) + sum_(A,B) E_inter(A,B)/2
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.SystemSumMAE
+  name: total_energy
+  target: energy
+  tasks: [iqa_intra_a, iqa_inter_ab]
+
+# The subterms reconstructed from the predicted fractions and compared against the
+# true subterms (eV), under the same keys as derived_metrics/iqa_decompose_subterms_cx:
+#   X(A) = f_X(A) * E_intra(A),   X(A,B)/2 = g_X(A,B) * V_nn(A,B)/2
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_kinetic
+  target: iqa_kinetic
+  tasks: [iqa_kinetic_frac, iqa_intra_a]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vne
+  target: iqa_vne
+  tasks: [iqa_vne_frac, iqa_intra_a]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vee_c
+  target: iqa_vee_c
+  tasks: [iqa_vee_c_frac, iqa_intra_a]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vee_x
+  target: iqa_vee_x
+  tasks: [iqa_vee_x_frac, iqa_intra_a]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vne_ab
+  target: iqa_vne_ab
+  tasks: [iqa_vne_ab_frac, iqa_vnn_ab]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_ven_ab
+  target: iqa_ven_ab
+  tasks: [iqa_ven_ab_frac, iqa_vnn_ab]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vee_c_ab
+  target: iqa_vee_c_ab
+  tasks: [iqa_vee_c_ab_frac, iqa_vnn_ab]
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.ProductMAE
+  name: iqa_vee_x_ab
+  target: iqa_vee_x_ab
+  tasks: [iqa_vee_x_ab_frac, iqa_vnn_ab]

@@ -1,0 +1,19 @@
+# iqa_dipole_atomchg_sigma0p05_6A with the head of the best subterm model (run 4 in
+# IQA_SUBTERMS_CX_2026-10.md) instead of the linear readout of the backbone's l=1
+# features: the dipole is the l=1 part of SO(2) edge messages, which see all backbone
+# degrees and the edge directions, refined by triangle attention and summed per atom
+# with the per-head attention weights. Same backbone, data and batch as the 5-layer and
+# lmax-3 reruns of this model (IQA_RERUNS_2026-10.md), so val/loss compares directly.
+defaults:
+  - iqa_dipole_atomchg_sigma0p05_6A
+  - _self_
+
+job:
+  run_name: dipole-atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_6A_so2head_triangle_attnnodes_40h
+
+heads:
+  dipole_vector:
+    module: fairchem.core.models.uma.escn_md.SO2_Dipole_Vector_Head
+    activation_type: so2_gate
+    attention_type: triangle
+    triangle_node_aggregation: attention

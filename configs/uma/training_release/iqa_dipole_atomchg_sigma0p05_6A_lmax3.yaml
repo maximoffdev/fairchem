@@ -1,0 +1,12 @@
+# The pipeline dipole model (iqa_dipole_atomchg_sigma0p05_6A) with lmax 3 instead of 2
+# and the same 4 backbone layers. mmax stays 2, as in the larger UMA backbones.
+# See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_dipole_atomchg_sigma0p05_6A
+  - _self_
+
+job:
+  run_name: dipole-atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_6A_lmax3_40h
+
+backbone:
+  lmax: 3
