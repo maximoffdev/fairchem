@@ -2981,23 +2981,28 @@ class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
         return {self.property_name: vector}
 
 
-class SO2_Dipole_Vector_Head(SO2EquivariantGraphAttentionNodeEdgePrediction):
-    """Per-atom dipole vector from the SO(2) node/edge attention trunk.
+class SO2_Node_Head(SO2EquivariantGraphAttentionNodeEdgePrediction):
+    """Per-atom property from the SO(2) node/edge attention trunk.
 
-    The l=1 part (``out_degree=1``) of the aggregated edge messages, which see all
-    backbone degrees and the edge directions. Returns the flat
-    ``{property_name: [N, 3]}`` of ``MLP_Dipole_Vector_Head``, so it is a drop-in
-    replacement in the dipole configs. Other kwargs go to the trunk, e.g.
-    ``attention_type``.
+    The degree-``out_degree`` part of the aggregated edge messages, which see all
+    backbone degrees and the edge directions, returned flat as
+    ``{property_name: tensor}`` like the MLP node heads. Other kwargs go to the trunk,
+    e.g. ``attention_type``.
     """
 
-    def __init__(self, backbone: eSCNMDBackbone, property_name: str, **kwargs) -> None:
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        property_name: str,
+        out_degree: int,
+        **kwargs,
+    ) -> None:
         super().__init__(
             backbone,
             edge_prediction=False,
             node_prediction=True,
             node_task_name=property_name,
-            out_degree=1,
+            out_degree=out_degree,
             **kwargs,
         )
         self.property_name = property_name
@@ -3007,3 +3012,39 @@ class SO2_Dipole_Vector_Head(SO2EquivariantGraphAttentionNodeEdgePrediction):
     ) -> dict[str, torch.Tensor]:
         output = super().forward(data, emb)
         return {self.property_name: output[self.property_name]["node_pred"]}
+
+
+class SO2_Dipole_Vector_Head(SO2_Node_Head):
+    """Per-atom dipole vector [N, 3], the l=1 output of ``SO2_Node_Head``.
+
+    A drop-in replacement for ``MLP_Dipole_Vector_Head`` in the dipole configs.
+    """
+
+    def __init__(self, backbone: eSCNMDBackbone, property_name: str, **kwargs) -> None:
+        super().__init__(backbone, property_name, out_degree=1, **kwargs)
+
+
+class SO2_Charge_Head(SO2_Node_Head):
+    """Per-atom charge q(A) [N] as ``{"pred": ...}``, the l=0 output of ``SO2_Node_Head``.
+
+    A drop-in replacement for ``IQA_Node_Head2`` in the charge configs.
+    ``conserve_total_charge`` shifts each molecule's charges uniformly to sum to its
+    total charge, as in ``IQA_Node_Head2`` (the task's normalizer must be the identity).
+    """
+
+    def __init__(
+        self,
+        backbone: eSCNMDBackbone,
+        conserve_total_charge: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__(backbone, property_name="pred", out_degree=0, **kwargs)
+        self.conserve_total_charge = conserve_total_charge
+
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        pred = super().forward(data, emb)["pred"]
+        if self.conserve_total_charge:
+            pred = _shift_to_total_charge(pred, data)
+        return {"pred": pred}

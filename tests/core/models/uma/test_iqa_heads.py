@@ -16,6 +16,7 @@ from fairchem.core.models.uma.escn_md import (
     IQA_IntraSO2MultiHead,
     IQA_MultiTaskSO2Head,
     IQA_Node_Head2,
+    SO2_Charge_Head,
     SO2_Dipole_Vector_Head,
     SO2EquivariantGraphAttentionNodeEdgePrediction,
     _shift_to_total_charge,
@@ -218,11 +219,22 @@ def test_shift_to_total_charge_is_uniform_per_molecule():
         torch.testing.assert_close(d, d[:1].expand_as(d))
 
 
-def test_charge_head_conserves_total_charge_in_fp32():
+@pytest.mark.parametrize("head_cls", ["mlp", "so2"])
+def test_charge_head_conserves_total_charge_in_fp32(head_cls: str):
     torch.manual_seed(0)
     backbone = eSCNMDBackbone(**BACKBONE_KWARGS)
     batch = _charged_batch()
-    head = IQA_Node_Head2(backbone, dropout=0.0, conserve_total_charge=True)
+    head = (
+        IQA_Node_Head2(backbone, dropout=0.0, conserve_total_charge=True)
+        if head_cls == "mlp"
+        else SO2_Charge_Head(
+            backbone,
+            conserve_total_charge=True,
+            activation_type="so2_gate",
+            attention_type="triangle",
+            triangle_node_aggregation="attention",
+        )
+    )
     with torch.no_grad(), torch.autocast(device_type="cpu", dtype=torch.bfloat16):
         q = head(batch, backbone(batch))["pred"]
     assert q.dtype == torch.float32
@@ -761,3 +773,23 @@ def test_so2_dipole_head_is_rotation_equivariant(monkeypatch, attention_type: st
     torch.testing.assert_close(
         out_rot["dipole_vector"], vector @ rotation.T, atol=1e-5, rtol=1e-4
     )
+
+
+def test_so2_charge_head_is_rotation_invariant(monkeypatch):
+    _fixed_roll(monkeypatch, 0.0)
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(**BACKBONE_KWARGS, ff_type="spectral")
+    head = SO2_Charge_Head(
+        backbone,
+        activation_type="so2_gate",
+        attention_type="triangle",
+        triangle_node_aggregation="attention",
+        num_heads=2,
+    )
+    torch.manual_seed(1)
+    batch, rotated = _batch(), _batch(rand_matrix())
+    with torch.no_grad():
+        q = head(batch, _scaled(backbone(batch), 30.0))["pred"]
+        q_rot = head(rotated, _scaled(backbone(rotated), 30.0))["pred"]
+    assert q.shape == (batch.num_nodes,)
+    torch.testing.assert_close(q_rot, q, atol=1e-5, rtol=1e-4)
