@@ -110,6 +110,19 @@ as many optimizer steps as the originals. Submitted on 2026-10-15 as Slurm jobs
 - If the log of runs 1 to 6 contains a warning mentioning `legacy_sep_s2`, that run is
   training with the old activation. Cancel it.
 
+## Follow-up: dipole model with the SO(2) triangle head (November 2026)
+
+Runs 7 and 8 changed only the backbone and both ended at val/loss 0.028-0.029, so the
+readout looks like the limit: `MLP_Dipole_Vector_Head` is one `SO3_Linear` on the
+backbone's l=1 features, so l=0 and l=2 never reach the dipole.
+`iqa_dipole_atomchg_sigma0p05_6A_so2head_triangle.yaml` keeps the 4-layer backbone of
+the pipeline model and swaps in `SO2_Dipole_Vector_Head`: the trunk of the best
+subterm model (run 4 in IQA_SUBTERMS_CX_2026-10.md: `so2_gate`, triangle attention,
+attention-weighted node aggregation) with `out_degree: 1`. The dipole is the l=1 part of
+the summed edge messages, which see all backbone degrees and the edge directions. Its
+output format equals the old head's, so tasks and `pass_through_head_outputs` are
+unchanged. Submitted like runs 7 and 8 (2 GPUs, `max_atoms=1600`, 40 h).
+
 ## Old checkpoints
 
 The head's default is still `activation_type: legacy_sep_s2`. That default lets the
