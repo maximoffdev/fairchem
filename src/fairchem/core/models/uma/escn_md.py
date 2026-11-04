@@ -2974,9 +2974,36 @@ class MLP_Dipole_Vector_Head(nn.Module, HeadInterface):
         
         # Extrahiere den L=1 Anteil (Vektor) -> Indizes 1,2,3
         vector = res.narrow(1, 1, 3).view(-1, 3).contiguous()
-        
+
         if gp_utils.initialized():
             vector = gp_utils.gather_from_model_parallel_region(vector, dim=0)
-            
+
         return {self.property_name: vector}
 
+
+class SO2_Dipole_Vector_Head(SO2EquivariantGraphAttentionNodeEdgePrediction):
+    """Per-atom dipole vector from the SO(2) node/edge attention trunk.
+
+    The l=1 part (``out_degree=1``) of the aggregated edge messages, which see all
+    backbone degrees and the edge directions. Returns the flat
+    ``{property_name: [N, 3]}`` of ``MLP_Dipole_Vector_Head``, so it is a drop-in
+    replacement in the dipole configs. Other kwargs go to the trunk, e.g.
+    ``attention_type``.
+    """
+
+    def __init__(self, backbone: eSCNMDBackbone, property_name: str, **kwargs) -> None:
+        super().__init__(
+            backbone,
+            edge_prediction=False,
+            node_prediction=True,
+            node_task_name=property_name,
+            out_degree=1,
+            **kwargs,
+        )
+        self.property_name = property_name
+
+    def forward(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        output = super().forward(data, emb)
+        return {self.property_name: output[self.property_name]["node_pred"]}

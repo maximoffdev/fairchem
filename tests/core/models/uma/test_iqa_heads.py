@@ -16,6 +16,7 @@ from fairchem.core.models.uma.escn_md import (
     IQA_IntraSO2MultiHead,
     IQA_MultiTaskSO2Head,
     IQA_Node_Head2,
+    SO2_Dipole_Vector_Head,
     SO2EquivariantGraphAttentionNodeEdgePrediction,
     _shift_to_total_charge,
     eSCNMDBackbone,
@@ -727,3 +728,36 @@ def test_triangle_attention_node_aggregation_weights_only_the_nodes(
         reduce="mean",
     )
     torch.testing.assert_close(aggregated, mean)
+
+
+@pytest.mark.parametrize("attention_type", ["graph", "triangle"])
+def test_so2_dipole_head_is_rotation_equivariant(monkeypatch, attention_type: str):
+    _fixed_roll(monkeypatch, 0.0)
+    torch.manual_seed(0)
+    backbone = eSCNMDBackbone(**BACKBONE_KWARGS, ff_type="spectral")
+    kwargs = (
+        {"triangle_node_aggregation": "attention"}
+        if attention_type == "triangle"
+        else {}
+    )
+    head = SO2_Dipole_Vector_Head(
+        backbone,
+        property_name="dipole_vector",
+        activation_type="so2_gate",
+        attention_type=attention_type,
+        num_heads=2,
+        **kwargs,
+    )
+    torch.manual_seed(1)
+    rotation = rand_matrix()
+    batch, rotated = _batch(), _batch(rotation)
+    with torch.no_grad():
+        out = head(batch, _scaled(backbone(batch), 30.0))
+        out_rot = head(rotated, _scaled(backbone(rotated), 30.0))
+    assert set(out) == {"dipole_vector"}
+    vector = out["dipole_vector"]
+    assert vector.shape == (batch.num_nodes, 3)
+    assert vector.dtype == torch.float32
+    torch.testing.assert_close(
+        out_rot["dipole_vector"], vector @ rotation.T, atol=1e-5, rtol=1e-4
+    )
