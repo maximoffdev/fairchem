@@ -1,0 +1,4 @@
+# @package heads.iqa_charge
+# Invariant MLP head on the atom features (L=0 features + norms of L>0).
+module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
+dropout: 0.0

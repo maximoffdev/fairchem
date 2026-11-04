@@ -7,6 +7,8 @@ defaults:
   - dataset: iqa_components
   - tasks: iqa_atomic_charge
   - backbone: K2L2_64
+  # the head module and its own settings (charge_head/)
+  - charge_head: mlp
   - _self_
 
 job:
@@ -91,11 +93,9 @@ eval_dataloader:
     exclude_keys: ${exclude_keys}
 
 heads:
-  # Invariant head (L=0 features + norms of L>0) -> a charge is a scalar.
-  # Returns {"pred": (N,)}, hence `property: pred` on the task.
+  # Module from the charge_head group. Every charge head returns {"pred": (N,)},
+  # hence `property: pred` on the task.
   iqa_charge:
-    module: fairchem.core.models.uma.escn_md.IQA_Node_Head2
-    dropout: 0.0
     # q(A) of each molecule sums to its total charge (task normalizer must be identity)
     conserve_total_charge: True
 

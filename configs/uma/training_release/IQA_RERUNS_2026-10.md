@@ -123,6 +123,25 @@ the summed edge messages, which see all backbone degrees and the edge directions
 output format equals the old head's, so tasks and `pass_through_head_outputs` are
 unchanged. Submitted like runs 7 and 8 (2 GPUs, `max_atoms=1600`, 40 h).
 
+## Follow-up: charge models with the SO(2) triangle head (November 2026)
+
+The two full-train charge models get the same head as the dipole follow-up above
+(`SO2_Charge_Head`: q(A) as the l=0 part of the triangle trunk), in place of the
+invariant MLP `IQA_Node_Head2`:
+- `iqa_charge_fulltrain_so2head_triangle.yaml`: total-charge conditioning. Unlike
+  `iqa_charge_fulltrain` (val/loss 0.0046), the q(A) sum is *not* constrained to the
+  total charge.
+- `iqa_charge_nochg_fulltrain_so2head_triangle.yaml`: no conditioning, no constraint,
+  as `iqa_charge_nochg_fulltrain` (val/loss 0.0076).
+
+The head is chosen through the new config group `charge_head/` (`mlp` is the default
+of both base configs, `so2_triangle` the new head), because a child config cannot drop
+the MLP head's `dropout` key. All eight existing charge configs resolve unchanged. The
+head is half the default width (`hidden_channels: 24`, 4 heads): 128k parameters next
+to the 0.48M of the K2L2_48 backbone, against ~12k for the MLP head. Submitted like
+the originals (2 GPUs, `max_atoms=1200`) but with `cluster.timeout_hr=20` instead of
+14, since the originals were still improving at the end and the head costs time.
+
 ## Old checkpoints
 
 The head's default is still `activation_type: legacy_sep_s2`. That default lets the

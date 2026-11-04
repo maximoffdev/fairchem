@@ -1,0 +1,15 @@
+# iqa_charge_fulltrain (total-charge conditioning) with the SO(2) triangle head of the
+# best subterm model instead of the invariant MLP head, and without the q(A) sum
+# constraint: the model is conditioned on the total charge but its q(A) are not
+# shifted to sum to it. Same backbone (K2L2_48, 4 A), data and batch.
+defaults:
+  - iqa_charge_fulltrain
+  - override charge_head: so2_triangle
+  - _self_
+
+job:
+  run_name: charge-K${backbone.num_layers}L${backbone.lmax}-${backbone.sphere_channels}ch-fulltrain_so2head_triangle_attnnodes_totalchargecond_noqsum_lagcut5e-4_otf_300neighbors_4A_${cluster.timeout_hr}h
+
+heads:
+  iqa_charge:
+    conserve_total_charge: False
