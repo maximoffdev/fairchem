@@ -24,11 +24,18 @@ from fairchem.core.models.uma.escn_md import (
 )
 from fairchem.core.models.uma.escn_md_block import smooth_degree
 from fairchem.core.models.uma.nn.activation import SeparableS2Activation
+from fairchem.core.models.uma.nn.fraction_closure import (
+    ClosureMode,
+    FractionClosureConfig,
+    TaskScale,
+    TaskScaleConfig,
+)
 from fairchem.core.models.uma.nn.triangle_attention import (
     DensePairLayout,
     EquivariantTriangleAttention,
 )
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
+from fairchem.core.modules.iqa_coulomb import point_charge_pair_energy
 
 BACKBONE_KWARGS = {
     "max_num_elements": 100,
@@ -793,3 +800,201 @@ def test_so2_charge_head_is_rotation_invariant(monkeypatch):
         q_rot = head(rotated, _scaled(backbone(rotated), 30.0))["pred"]
     assert q.shape == (batch.num_nodes,)
     torch.testing.assert_close(q_rot, q, atol=1e-5, rtol=1e-4)
+
+
+INTRA_FRACTIONS = [
+    "iqa_kinetic_frac",
+    "iqa_vne_frac",
+    "iqa_vee_c_frac",
+    "iqa_vee_x_frac",
+]
+PAIR_FRACTIONS = [
+    "iqa_vne_ab_frac",
+    "iqa_ven_ab_frac",
+    "iqa_vee_c_ab_frac",
+    "iqa_vee_x_ab_frac",
+]
+
+
+def _closure_scales() -> dict[str, TaskScaleConfig]:
+    def atom(ref: float, rmsd: float) -> TaskScaleConfig:
+        return {"mean": 0.0, "rmsd": rmsd, "element_references": [ref] * 100}
+
+    return {
+        "iqa_kinetic_frac": atom(-1.0, 0.14),
+        "iqa_vne_frac": atom(2.6, 0.27),
+        "iqa_vee_c_frac": atom(-0.7, 0.24),
+        "iqa_vee_x_frac": atom(0.1, 0.11),
+        "iqa_inter_ab": {"mean": -0.69, "rmsd": 2.69},
+        "iqa_vne_ab_frac": {"mean": -0.93, "rmsd": 0.20},
+        "iqa_ven_ab_frac": {"mean": -0.93, "rmsd": 0.20},
+        "iqa_vee_c_ab_frac": {"mean": 0.87, "rmsd": 0.27},
+        "iqa_vee_x_ab_frac": {"mean": -0.008, "rmsd": 0.022},
+    }
+
+
+def _fraction_head(
+    backbone: eSCNMDBackbone, closure: FractionClosureConfig | None
+) -> IQA_MultiTaskSO2Head:
+    torch.manual_seed(1)
+    return IQA_MultiTaskSO2Head(
+        backbone,
+        node_task_names=["iqa_intra_a", *INTRA_FRACTIONS],
+        edge_task_names=[
+            "iqa_inter_ab",
+            "iqa_vne_ab_frac",
+            "iqa_vee_c_ab_frac",
+            "iqa_vee_x_ab_frac",
+        ],
+        symmetric_edge_task_names=[
+            "iqa_inter_ab",
+            "iqa_vee_c_ab_frac",
+            "iqa_vee_x_ab_frac",
+        ],
+        reversed_edge_tasks={"iqa_ven_ab_frac": "iqa_vne_ab_frac"},
+        attention_type="triangle",
+        triangle_node_aggregation="attention",
+        activation_type="so2_gate",
+        fraction_closure=closure,
+    )
+
+
+def _closure_config(mode: ClosureMode) -> FractionClosureConfig:
+    return {
+        "mode": mode,
+        "scales": _closure_scales(),
+        "intra_fractions": INTRA_FRACTIONS,
+        "pair_energy": "iqa_inter_ab",
+        "pair_fractions": PAIR_FRACTIONS,
+    }
+
+
+def _physical(
+    out: dict[str, dict[str, torch.Tensor]], batch: AtomicData
+) -> dict[str, torch.Tensor]:
+    scales = _closure_scales()
+    values = {}
+    for task in INTRA_FRACTIONS:
+        values[task] = TaskScale(scales[task]).to_physical(
+            out[task]["node_pred"], batch.atomic_numbers
+        )
+    for task in [*PAIR_FRACTIONS, "iqa_inter_ab"]:
+        values[task] = TaskScale(scales[task]).to_physical(out[task]["edge_pred"], None)
+    return values
+
+
+def _vnn_half(batch: AtomicData, emb: dict[str, torch.Tensor]) -> torch.Tensor:
+    z = batch.atomic_numbers
+    distance = torch.linalg.norm(emb["edge_distance_vec"].double(), dim=-1)
+    return point_charge_pair_energy(
+        z[emb["edge_index"][0]], z[emb["edge_index"][1]], distance
+    )
+
+
+def _closed_and_free(
+    backbone_and_emb, mode: ClosureMode
+) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, dict[str, torch.Tensor]]]:
+    backbone, batch, emb = backbone_and_emb
+    free = _fraction_head(backbone, None)
+    closed = _fraction_head(backbone, _closure_config(mode))
+    # the closure adds no parameters or persistent buffers
+    closed.load_state_dict(free.state_dict(), strict=True)
+    with torch.no_grad():
+        return closed(batch, emb), free(batch, emb)
+
+
+@pytest.mark.parametrize("mode", ["proportional", "error_weighted"])
+def test_fraction_closure_meets_the_sum_rules(
+    backbone_and_emb, no_frame_roll, mode: ClosureMode
+):
+    _, batch, emb = backbone_and_emb
+    out, free = _closed_and_free(backbone_and_emb, mode)
+    phys = _physical(out, batch)
+
+    intra_sum = sum(phys[task] for task in INTRA_FRACTIONS)
+    assert torch.allclose(intra_sum, torch.ones_like(intra_sum), atol=1e-6)
+    target = phys["iqa_inter_ab"] / _vnn_half(batch, emb) - 1.0
+    pair_sum = sum(phys[task] for task in PAIR_FRACTIONS)
+    assert torch.allclose(pair_sum, target, atol=1e-6)
+
+    # the energies are untouched, the fractions are not
+    for task, key in (("iqa_intra_a", "node_pred"), ("iqa_inter_ab", "edge_pred")):
+        assert torch.equal(out[task][key], free[task][key])
+    assert not torch.equal(
+        out["iqa_vne_frac"]["node_pred"], free["iqa_vne_frac"]["node_pred"]
+    )
+
+    rev = _reverse(emb)
+    for task in ("iqa_vee_c_ab_frac", "iqa_vee_x_ab_frac"):
+        pred = out[task]["edge_pred"]
+        assert torch.equal(pred, pred[rev])
+    vne = out["iqa_vne_ab_frac"]["edge_pred"]
+    assert torch.equal(out["iqa_ven_ab_frac"]["edge_pred"], vne[rev])
+
+
+def test_fraction_closure_spreads_the_residual_by_mode(backbone_and_emb, no_frame_roll):
+    _, batch, _ = backbone_and_emb
+    scales = _closure_scales()
+    free_out = _closed_and_free(backbone_and_emb, "proportional")[1]
+    free = _physical(free_out, batch)
+
+    proportional = _physical(
+        _closed_and_free(backbone_and_emb, "proportional")[0], batch
+    )
+    factors = torch.stack([proportional[t] / free[t] for t in INTRA_FRACTIONS])
+    assert torch.allclose(factors, factors[:1].expand_as(factors), atol=1e-5)
+
+    weighted = _physical(_closed_and_free(backbone_and_emb, "error_weighted")[0], batch)
+    shifts = torch.stack([weighted[t] - free[t] for t in INTRA_FRACTIONS])
+    variances = torch.tensor(
+        [scales[t]["rmsd"] ** 2 for t in INTRA_FRACTIONS], dtype=torch.float64
+    )
+    expected = shifts.sum(dim=0) * (variances / variances.sum()).view(-1, 1)
+    assert torch.allclose(shifts, expected, atol=1e-6)
+
+
+def test_fraction_closure_validation(backbone_and_emb):
+    backbone, _, _ = backbone_and_emb
+
+    def config(
+        intra: list[str], pair_energy: str, pair: list[str]
+    ) -> FractionClosureConfig:
+        used = {*intra, pair_energy, *pair}
+        return {
+            "mode": "error_weighted",
+            "scales": {t: s for t, s in _closure_scales().items() if t in used},
+            "intra_fractions": intra,
+            "pair_energy": pair_energy,
+            "pair_fractions": pair,
+        }
+
+    with pytest.raises(ValueError, match="symmetric edge task"):
+        _fraction_head(
+            backbone, config(INTRA_FRACTIONS, "iqa_vne_ab_frac", PAIR_FRACTIONS)
+        )
+    with pytest.raises(ValueError, match="reversed pair"):
+        _fraction_head(
+            backbone, config(INTRA_FRACTIONS, "iqa_inter_ab", PAIR_FRACTIONS[1:])
+        )
+    with pytest.raises(ValueError, match="unused tasks"):
+        _fraction_head(
+            backbone,
+            {
+                **config(INTRA_FRACTIONS[1:], "iqa_inter_ab", PAIR_FRACTIONS),
+                "scales": _closure_scales(),
+            },
+        )
+    with pytest.raises(ValueError, match="go together"):
+        _fraction_head(
+            backbone,
+            {
+                "mode": "error_weighted",
+                "scales": {t: _closure_scales()[t] for t in PAIR_FRACTIONS},
+                "pair_fractions": PAIR_FRACTIONS,
+            },
+        )
+    with pytest.raises(ValueError, match="Unknown fraction closure mode"):
+        _fraction_head(
+            backbone,
+            {**_closure_config("error_weighted"), "mode": "softmax"},
+        )

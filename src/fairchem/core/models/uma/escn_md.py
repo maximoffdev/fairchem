@@ -48,6 +48,11 @@ from fairchem.core.models.uma.nn.radial import GaussianSmearing, RadialMLP
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
 from fairchem.core.models.uma.nn.so2_layers import SO2_Convolution
 from fairchem.core.models.uma.nn.so2_tp import SO2_Convolution_TensorProduct
+from fairchem.core.models.uma.nn.fraction_closure import (
+    FractionClosure,
+    FractionClosureConfig,
+    TaskScale,
+)
 from fairchem.core.models.uma.nn.triangle_attention import (
     DensePairLayout,
     EquivariantTriangleAttention,
@@ -2385,6 +2390,13 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
             task's prediction on the reversed edge, derived(A,B) = source(B,A) --
             V_en(A,B) = V_ne(B,A). The derived task gets no projection of its own;
             its normalizer and references must equal the source's.
+        fraction_closure: makes the subterms rebuilt from predicted fractions add
+            up exactly to the predicted energies (see ``fraction_closure.py``):
+            ``intra_fractions`` (node tasks, f_X = X(A,A)/E_intra(A)) are closed to
+            sum 1; ``pair_fractions`` (edge tasks, g_X = X(A,B)/V_nn(A,B)) to
+            E_inter/V_nn - 1, with E_inter from the symmetric edge task
+            ``pair_energy`` (E_inter/2 per directed edge) and V_nn analytic.
+            ``None`` (default) leaves the fractions unconstrained.
 
     Node and edge tasks share the *same* trunk here. To give each group its own
     trunk, declare two of these heads instead (one with only ``node_task_names``,
@@ -2401,6 +2413,7 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
         output_channels: int = 1,
         symmetric_edge_task_names: list[str] | None = None,
         reversed_edge_tasks: dict[str, str] | None = None,
+        fraction_closure: FractionClosureConfig | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -2429,6 +2442,7 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
         self.share_trunk = bool(share_trunk)
         self.per_task_proj_1 = bool(per_task_proj_1)
         self.output_channels = int(output_channels)
+        self._build_fraction_closure(fraction_closure)
 
         if not self.share_trunk:
             # Independent head per task: identical parameterization to declaring one
@@ -2525,6 +2539,110 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
                     f"reversed task '{derived}' must not also be predicted directly"
                 )
 
+    def _build_fraction_closure(self, config: FractionClosureConfig | None) -> None:
+        self.intra_closure: FractionClosure | None = None
+        self.pair_closure: FractionClosure | None = None
+        self.pair_energy_task: str | None = None
+        self.pair_energy_scale: TaskScale | None = None
+        if config is None:
+            return
+        unknown = set(config) - {
+            "mode",
+            "scales",
+            "intra_fractions",
+            "pair_energy",
+            "pair_fractions",
+        }
+        if unknown:
+            raise ValueError(f"Unknown fraction_closure keys {sorted(unknown)}")
+        mode = config["mode"]
+        scales = dict(config["scales"])
+        intra = [str(task) for task in config.get("intra_fractions") or []]
+        pair = [str(task) for task in config.get("pair_fractions") or []]
+        pair_energy = config.get("pair_energy")
+        used = set(intra) | set(pair) | ({pair_energy} if pair_energy else set())
+        if not intra and not pair:
+            raise ValueError("fraction_closure needs intra_fractions or pair_fractions")
+        unused = set(scales) - used
+        if unused:
+            raise ValueError(
+                f"fraction_closure scales for unused tasks {sorted(unused)}"
+            )
+
+        if intra:
+            not_nodes = [task for task in intra if task not in self.node_task_names]
+            if not_nodes:
+                raise ValueError(f"intra_fractions {not_nodes} are not node tasks")
+            self.intra_closure = FractionClosure(mode, scales, intra)
+
+        if bool(pair) != (pair_energy is not None):
+            raise ValueError("pair_fractions and pair_energy go together")
+        if pair_energy is not None:
+            # The closure shifts g(A,B) and g(B,A) by the same amount only if its
+            # target and the sum over a reversed pair are symmetric.
+            if pair_energy not in self.symmetric_edge_task_names:
+                raise ValueError(
+                    f"pair_energy '{pair_energy}' must be a symmetric edge task"
+                )
+            edge_outputs = set(self.edge_task_names) | set(self.reversed_edge_tasks)
+            not_edges = [task for task in pair if task not in edge_outputs]
+            if not_edges:
+                raise ValueError(f"pair_fractions {not_edges} are not edge tasks")
+            for derived, source in self.reversed_edge_tasks.items():
+                if (derived in pair) != (source in pair):
+                    raise ValueError(
+                        f"pair_fractions must hold both or neither of the reversed "
+                        f"pair '{source}' / '{derived}'"
+                    )
+            if pair_energy not in scales:
+                raise ValueError(f"No task scale for pair_energy '{pair_energy}'")
+            self.pair_energy_task = str(pair_energy)
+            self.pair_energy_scale = TaskScale(scales[pair_energy])
+            self.pair_closure = FractionClosure(mode, scales, pair)
+
+    def _close_fractions(
+        self,
+        data: AtomicData,
+        emb: dict[str, torch.Tensor],
+        outputs: dict[str, dict[str, torch.Tensor]],
+    ) -> None:
+        """Replace the fraction predictions in ``outputs`` by closed ones."""
+        if self.intra_closure is None and self.pair_closure is None:
+            return
+        if gp_utils.initialized():
+            raise NotImplementedError(
+                "The fraction closure is not implemented under graph parallel."
+            )
+        atomic_numbers = data["atomic_numbers"]
+        if self.intra_closure is not None:
+            closure = self.intra_closure
+            closed = closure(
+                {task: outputs[task]["node_pred"] for task in closure.tasks},
+                torch.ones_like(atomic_numbers, dtype=torch.float64),
+                atomic_numbers,
+            )
+            for task, pred in closed.items():
+                outputs[task]["node_pred"] = pred
+        if self.pair_closure is not None:
+            if self.pair_energy_task is None or self.pair_energy_scale is None:
+                raise RuntimeError("pair closure without pair energy")
+            closure = self.pair_closure
+            edge_index = emb["edge_index"]
+            distance = torch.linalg.norm(emb["edge_distance_vec"].double(), dim=-1)
+            vnn_half = point_charge_pair_energy(
+                atomic_numbers[edge_index[0]], atomic_numbers[edge_index[1]], distance
+            )
+            inter_half = self.pair_energy_scale.to_physical(
+                outputs[self.pair_energy_task]["edge_pred"], None
+            ).view_as(vnn_half)
+            closed = closure(
+                {task: outputs[task]["edge_pred"] for task in closure.tasks},
+                inter_half / vnn_half - 1.0,
+                None,
+            )
+            for task, pred in closed.items():
+                outputs[task]["edge_pred"] = pred
+
     def _edge_proj(self, task: str, x: torch.Tensor) -> torch.Tensor:
         proj_1 = (
             self.edge_proj_1_tasks[task] if self.per_task_proj_1 else self.edge_proj_1
@@ -2536,12 +2654,25 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
     def forward(
         self, data: AtomicData, emb: dict[str, torch.Tensor]
     ) -> dict[str, dict[str, torch.Tensor]]:
-        if not self.share_trunk:
-            outputs: dict[str, dict[str, torch.Tensor]] = {}
-            for head in self.task_heads.values():
-                outputs.update(head(data, emb))
-            return outputs
+        outputs = (
+            self._shared_trunk_outputs(data, emb)
+            if self.share_trunk
+            else self._separate_trunk_outputs(data, emb)
+        )
+        self._close_fractions(data, emb, outputs)
+        return outputs
 
+    def _separate_trunk_outputs(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        outputs: dict[str, dict[str, torch.Tensor]] = {}
+        for head in self.task_heads.values():
+            outputs.update(head(data, emb))
+        return outputs
+
+    def _shared_trunk_outputs(
+        self, data: AtomicData, emb: dict[str, torch.Tensor]
+    ) -> dict[str, dict[str, torch.Tensor]]:
         messages = self.trunk.compute_edge_messages(data, emb)
         x_message = messages.edges
 
@@ -2550,7 +2681,7 @@ class IQA_MultiTaskSO2Head(nn.Module, HeadInterface):
             if self.symmetric_edge_task_names or self.reversed_edge_tasks
             else None
         )
-        outputs = {}
+        outputs: dict[str, dict[str, torch.Tensor]] = {}
         for task in self.edge_task_names:
             edge_pred = self._edge_proj(task, x_message)
             if task in self.symmetric_edge_task_names:

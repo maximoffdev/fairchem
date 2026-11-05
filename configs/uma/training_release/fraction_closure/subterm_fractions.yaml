@@ -1,0 +1,43 @@
+# @package heads.iqa_subterms_head.fraction_closure
+# Sum rules of the fractions of tasks/iqa_decompose_subterm_fractions, enforced by
+# construction in IQA_MultiTaskSO2Head (models/uma/nn/fraction_closure.py):
+#   sum_X f_X(A)   = 1                           -> sum_X X(A,A) = E_intra(A)
+#   sum_X g_X(A,B) = E_inter(A,B)/V_nn(A,B) - 1   -> V_nn + sum_X X(A,B) = E_inter(A,B)
+# The scales repeat the tasks' normalizers and element references, so the closure works
+# on the same physical values as the loss. The including config sets `mode`.
+intra_fractions: [iqa_kinetic_frac, iqa_vne_frac, iqa_vee_c_frac, iqa_vee_x_frac]
+pair_energy: iqa_inter_ab
+pair_fractions: [iqa_vne_ab_frac, iqa_ven_ab_frac, iqa_vee_c_ab_frac, iqa_vee_x_ab_frac]
+scales:
+  iqa_kinetic_frac:
+    mean: ${normalizer_mean_iqa_kinetic_frac}
+    rmsd: ${normalizer_rmsd_iqa_kinetic_frac}
+    element_references: ${element_refs.iqa_kinetic_frac}
+  iqa_vne_frac:
+    mean: ${normalizer_mean_iqa_vne_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_frac}
+    element_references: ${element_refs.iqa_vne_frac}
+  iqa_vee_c_frac:
+    mean: ${normalizer_mean_iqa_vee_c_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_c_frac}
+    element_references: ${element_refs.iqa_vee_c_frac}
+  iqa_vee_x_frac:
+    mean: ${normalizer_mean_iqa_vee_x_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_x_frac}
+    element_references: ${element_refs.iqa_vee_x_frac}
+  iqa_inter_ab:
+    mean: ${normalizer_mean_iqa_inter_ab}
+    rmsd: ${normalizer_rmsd_iqa_inter_ab}
+  iqa_vne_ab_frac:
+    mean: ${normalizer_mean_iqa_vne_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab_frac}
+  # V_en(A,B)/V_nn is the V_ne fraction of the reversed edge and shares its normalizer
+  iqa_ven_ab_frac:
+    mean: ${normalizer_mean_iqa_vne_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vne_ab_frac}
+  iqa_vee_c_ab_frac:
+    mean: ${normalizer_mean_iqa_vee_c_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_c_ab_frac}
+  iqa_vee_x_ab_frac:
+    mean: ${normalizer_mean_iqa_vee_x_ab_frac}
+    rmsd: ${normalizer_rmsd_iqa_vee_x_ab_frac}

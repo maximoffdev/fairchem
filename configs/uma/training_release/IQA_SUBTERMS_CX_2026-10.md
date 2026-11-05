@@ -14,6 +14,7 @@ Both inherit the task-independent `iqa_subterms_atomchg_common.yaml`.
 | 3 | `iqa_subterm_fractions_so2gate_triangle_6A.yaml` | as run 2, with triangle attention in the head |
 | 4 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_6A.yaml` | as run 3, with attention-weighted node aggregation |
 | 5 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_lmax4_6A.yaml` | run 4 with lmax 4, more regularization |
+| 6 | `iqa_subterm_fractions_so2gate_triangle_attnnodes_closure_6A.yaml` | run 4 with the fraction sum rules enforced |
 
 ## Identities in the labels
 
@@ -106,6 +107,42 @@ dipoles and quadrupoles): lmax 2 -> 4 (mmax stays 2) and 64 -> 128 radial basis
 functions. Against the overfitting it halves the learning rate (4e-4), raises the weight
 decay 10x (1e-2) and adds `alpha_drop: 0.1` on the attention weights. Submitted with
 `cluster.timeout_hr=60`, without a memory test.
+
+## Run 6: run 4 with the fraction sum rules enforced
+
+The fractions of runs 2-5 are predicted independently, so the rebuilt subterms do not
+add up to the predicted energies. Run 6 closes them by construction
+(`fraction_closure` of `IQA_MultiTaskSO2Head`, `models/uma/nn/fraction_closure.py`,
+task list and scales in `fraction_closure/subterm_fractions.yaml`):
+
+    sum_X f_X(A)   = 1                           ->  sum_X X(A,A)        = E_intra(A)
+    sum_X g_X(A,B) = E_inter(A,B)/V_nn(A,B) - 1   ->  V_nn + sum_X X(A,B) = E_inter(A,B)
+
+The head maps the raw fractions to physical units with the tasks' own normalizers and
+element references, shifts fraction X by w_X times the residual of its sum rule
+(`error_weighted`, w_X = rmsd_X^2 / sum rmsd^2, the smallest correction in the
+standardized units the model predicts in), and maps them back. E_intra and E_inter are
+untouched, the labels and normalizers are unchanged, and there is no extra loss term.
+`proportional` (one common factor per atom/pair) is the alternative.
+
+Applied post hoc to the run 4 checkpoint (no retraining, 866 val molecules, exact
+MAEs in eV; computed in fp32, so slightly above the bf16 validation log):
+
+| Metric | No closure | proportional | error_weighted |
+|---|---|---|---|
+| \|sum_X X(A,A) - E_intra(A)\| | 0.0100 | 0.00005 | 0.00005 |
+| \|V_nn/2 + sum_X X(A,B)/2 - E_inter(A,B)/2\| | 0.0075 | 0.0000 | 0.0000 |
+| T(A) | 0.0715 | 0.0735 | 0.0713 |
+| V_ne(A,A) | 0.2255 | 0.2301 | 0.2260 |
+| V_ee^C(A,A) | 0.2023 | 0.2033 | 0.2017 |
+| V_ee^X(A,A) | 0.0408 | 0.0410 | 0.0409 |
+| V_ne(A,B)/2 = V_en(B,A)/2 | 0.0241 | 0.0251 | 0.0240 |
+| V_ee^C(A,B)/2 | 0.0349 | 0.0368 | 0.0346 |
+| V_ee^X(A,B)/2 | 0.00193 | 0.00192 | 0.00192 |
+
+The remaining closure residual is fp32 rounding of the standardized outputs. The
+error-weighted closure makes the subterms consistent at no cost in accuracy, so run 6
+trains with it from the start. Script: `/data/horse/ws/maho053h-iqa-training/closure_eval/`.
 
 ## Validation metrics
 
