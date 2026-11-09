@@ -31,7 +31,7 @@ from fairchem.core.models.uma.nn.fraction_closure import (
     TaskScaleConfig,
 )
 from fairchem.core.models.uma.nn.triangle_attention import (
-    DensePairLayout,
+    AnchoredPairLayout,
     EquivariantTriangleAttention,
 )
 from fairchem.core.modules.edge_matching import match_edges_by_node_pairs
@@ -598,19 +598,52 @@ def test_triangle_attention_matches_loop_reference(backbone_and_emb, ending: boo
     ).double()
     torch.nn.init.normal_(block.to_out.weight)
     x = torch.randn(edge_index.shape[1], 9, 8, dtype=torch.float64, requires_grad=True)
-    layout = DensePairLayout.from_graph(edge_index, batch.batch, batch.natoms)
-    out = block(x, layout.transpose() if ending else layout)
+    layout = AnchoredPairLayout.from_graph(
+        edge_index.flip(0) if ending else edge_index, batch.batch
+    )
+    out = block(x, layout)
     torch.testing.assert_close(out, _triangle_reference(block, x, edge_index, ending))
     out.square().sum().backward()
     assert x.grad is not None
     assert torch.isfinite(x.grad).all()
 
 
-def test_dense_pair_layout_rejects_duplicate_pairs(backbone_and_emb):
+def test_anchored_pair_layout_slots_and_closing_edges():
+    """Atoms 0-3 fully connected but for 2-3: anchors 2 and 3 have a padded third slot,
+    and the padded slot of neighbour 1 would alias the key of edge (0, 3) unmasked."""
+    pairs = [(i, j) for i in range(4) for j in range(4) if i != j and {i, j} != {2, 3}]
+    edge_index = torch.tensor(pairs).T.flip(1)  # unsorted: slots are not edge order
+    layout = AnchoredPairLayout.from_graph(edge_index, torch.zeros(4, dtype=torch.long))
+    edge_of = {(i, j): e for e, (i, j) in enumerate(edge_index.T.tolist())}
+    assert layout.slot_edge.shape == (4, 3)
+    for anchor in range(4):
+        neighbours = sorted(j for i, j in edge_of if i == anchor)
+        padding = [-1] * (3 - len(neighbours))
+        assert (
+            layout.slot_edge[anchor].tolist()
+            == [edge_of[(anchor, j)] for j in neighbours] + padding
+        )
+        targets = neighbours + padding
+        assert layout.pair_edge[anchor].tolist() == [
+            [edge_of.get((js, jt), -1) if -1 not in (js, jt) else -1 for jt in targets]
+            for js in targets
+        ]
+    assert layout.slot_edge.view(-1)[layout.edge_slot].tolist() == list(
+        range(len(pairs))
+    )
+
+
+def test_anchored_pair_layout_rejects_cross_system_edges():
+    edge_index = torch.tensor([[0, 1], [1, 0]])
+    with pytest.raises(ValueError, match="different systems"):
+        AnchoredPairLayout.from_graph(edge_index, torch.tensor([0, 1]))
+
+
+def test_anchored_pair_layout_rejects_duplicate_pairs(backbone_and_emb):
     _, batch, emb = backbone_and_emb
     edge_index = torch.cat([emb["edge_index"], emb["edge_index"][:, :1]], dim=1)
     with pytest.raises(ValueError, match="at most one edge"):
-        DensePairLayout.from_graph(edge_index, batch.batch, batch.natoms)
+        AnchoredPairLayout.from_graph(edge_index, batch.batch)
 
 
 def test_triangle_edges_see_the_third_atom(backbone_and_emb, no_frame_roll):

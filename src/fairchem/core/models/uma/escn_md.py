@@ -54,7 +54,7 @@ from fairchem.core.models.uma.nn.fraction_closure import (
     TaskScale,
 )
 from fairchem.core.models.uma.nn.triangle_attention import (
-    DensePairLayout,
+    AnchoredPairLayout,
     EquivariantTriangleAttention,
 )
 from fairchem.core.models.uma.nn.activation import (
@@ -2011,9 +2011,10 @@ class SO2EquivariantGraphAttentionNodeEdgePrediction(nn.Module, HeadInterface):
             raise NotImplementedError(
                 "Triangle attention is not implemented under graph parallel."
             )
-        layout = DensePairLayout.from_graph(edge_index, data["batch"], data["natoms"])
-        x_message = x_message + self.triangle_attention_starting(x_message, layout)
-        return x_message + self.triangle_attention_ending(x_message, layout.transpose())
+        starting = AnchoredPairLayout.from_graph(edge_index, data["batch"])
+        ending = AnchoredPairLayout.from_graph(edge_index.flip(0), data["batch"])
+        x_message = x_message + self.triangle_attention_starting(x_message, starting)
+        return x_message + self.triangle_attention_ending(x_message, ending)
 
     def reversed_edge_messages(
         self,
