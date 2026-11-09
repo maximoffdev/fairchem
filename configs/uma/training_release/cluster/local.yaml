@@ -1,0 +1,20 @@
+data_root_dir: ../HCNOSPClF_combined_datasets_filtered0.001
+run_dir: /home/lukas/uni/whk/runs
+#run_dir: ${oc.env:PWD}/runs
+account: null
+qos: null
+mode: LOCAL
+device: CUDA
+ranks_per_node: 1
+dataloader_workers: 0
+debug: False
+mem_gb: 0
+cpus_per_task: 4
+timeout_hr: "48"
+partition: paula
+max_atoms: 10  # Reduced for local testing to avoid OOM
+
+max_neighbors: 5    # K4L2 is small enough to handle full neighbor count
+num_moe_experts: 1
+cutoff_radius: 4.0   # Å; matched to K10L4 backbone default
+setup_commands: []

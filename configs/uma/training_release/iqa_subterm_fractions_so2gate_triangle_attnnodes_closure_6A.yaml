@@ -1,0 +1,18 @@
+# iqa_subterm_fractions_so2gate_triangle_attnnodes_6A (run 4, the best subterm model)
+# with the fraction sum rules enforced by construction: the rebuilt subterms add up
+# exactly to the predicted E_intra(A) and E_inter(A,B), with V_nn analytic. The
+# residual of each sum rule is spread over the fractions in proportion to rmsd^2 of
+# their normalizers ("error_weighted"). Everything else, including the validation
+# metrics, is inherited. See IQA_SUBTERMS_CX_2026-10.md.
+defaults:
+  - iqa_subterm_fractions_so2gate_triangle_attnnodes_6A
+  - fraction_closure: subterm_fractions
+  - _self_
+
+job:
+  run_name: le-subterm_fractions_tri_attnnodes_closure_errweighted_atomchg_sigma0.02_lagcut5e-4_6A_36h
+
+heads:
+  iqa_subterms_head:
+    fraction_closure:
+      mode: error_weighted

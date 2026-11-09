@@ -1,0 +1,10 @@
+# Validation metrics on quantities built from several task predictions, logged as
+# val/mae/<name> (fairchem.core.units.mlip_unit.derived_metrics). The total energy is
+# compared against e_total, so it includes the E_inter of the pairs beyond the otf
+# cutoff, which the model does not predict (see IQA_SUBTERMS_CX_2026-10.md).
+
+# E = sum_A E_intra(A) + sum_(A,B) E_inter(A,B)/2
+- _target_: fairchem.core.units.mlip_unit.derived_metrics.SystemSumMAE
+  name: total_energy
+  target: energy
+  tasks: [iqa_intra_a, iqa_inter_ab]

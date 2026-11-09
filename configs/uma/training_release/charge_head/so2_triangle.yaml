@@ -1,0 +1,12 @@
+# @package heads.iqa_charge
+# The head of the best subterm model (run 4 in IQA_SUBTERMS_CX_2026-10.md): q(A) is the
+# l=0 part of SO(2) edge messages, refined by triangle attention and summed per atom
+# with the per-head attention weights.
+module: fairchem.core.models.uma.escn_md.SO2_Charge_Head
+activation_type: so2_gate
+attention_type: triangle
+triangle_node_aggregation: attention
+# Half the default width (backbone hidden_channels 48, 8 heads), keeping 6 channels per
+# head: 128k instead of 253k parameters next to the 0.48M of the K2L2_48 backbone.
+hidden_channels: 24
+num_heads: 4

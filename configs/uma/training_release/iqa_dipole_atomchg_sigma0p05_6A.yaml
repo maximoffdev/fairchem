@@ -1,0 +1,20 @@
+# Replica of the pipeline dipole model local_charge_pipeline_ckpts/dipole_local_charge_cond
+# (wandb lamerslab/iqa 202609-2923-2739-7817, dipole-atomchargecond_sigma0.05_lagcut5e-4_
+# otf_300neighbors_6A_40h, commit f8b6e92d, Leipzig 4 GPUs x 450 atoms). Verified leaf by
+# leaf against that run's config; on Dresden use cluster.max_atoms=900 (2 GPUs, same
+# global batch). Base of the capacity variants below; not itself meant to be rerun.
+defaults:
+  - iqa_dipole_atomchg_pretrain
+  - _self_
+
+job:
+  run_name: dipole-atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_6A_40h
+
+cutoff_radius: 6.0  # A; otf graph and radial basis cutoff
+
+# The original run predates the 2026-10-09 refit (0.716283 Debye).
+normalizer_rmsd_dipole_vector: 1.0
+
+dataset:
+  iqa_train:
+    sigma_atomic_charge: 0.05

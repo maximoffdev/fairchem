@@ -1,0 +1,26 @@
+# iqa_subterm_fractions_so2gate_triangle_attnnodes_6A scaled up in angular resolution:
+# lmax 4 (mmax stays 2, as in UMA's K10L4/K16L6) in the backbone and, through it, the
+# head, with a finer radial basis. Half the learning rate for the larger model, and
+# more regularization because the K4L2 runs overfit after ~80k steps (val plateaus
+# while train keeps falling): 10x weight decay, dropout on the attention weights.
+# See IQA_SUBTERMS_CX_2026-10.md.
+defaults:
+  - iqa_subterm_fractions_so2gate_triangle_attnnodes_6A
+  - _self_
+
+job:
+  run_name: le-subterm_fractions_tri_attnnodes_lmax4_lr4e-4_wd1e-2_drop0.1_atomchg_sigma0.02_lagcut5e-4_6A_60h
+
+backbone:
+  lmax: 4
+  num_distance_basis: 128
+
+heads:
+  iqa_subterms_head:
+    alpha_drop: 0.1
+
+runner:
+  train_eval_unit:
+    optimizer_fn:
+      lr: 4e-4
+      weight_decay: 1e-2

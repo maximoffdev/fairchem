@@ -238,6 +238,49 @@ class L2NormLoss(nn.Module):
         return torch.linalg.vector_norm(pred - target, ord=2, dim=-1)
 
 
+@registry.register_loss("dual_forces")
+class DualForcesLoss(nn.Module):
+    """Combine direct-force and grad-energy force losses against the same targets."""
+
+    def __init__(
+        self,
+        direct_coef: float = 1.0,
+        grad_coef: float = 1.0,
+        reduction: Literal["mean", "sum", "per_structure"] = "mean",
+    ) -> None:
+        super().__init__()
+        self.direct_loss = DDPMTLoss(
+            loss_fn=L2NormLoss(),
+            reduction=reduction,
+            coefficient=direct_coef,
+        )
+        self.grad_loss = DDPMTLoss(
+            loss_fn=L2NormLoss(),
+            reduction=reduction,
+            coefficient=grad_coef,
+        )
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        mult_mask: torch.Tensor,
+        natoms: torch.Tensor,
+    ) -> torch.Tensor:
+        if pred.dim() != 2 or pred.shape[1] != 6:
+            raise ValueError(
+                "DualForcesLoss expects pred shape [N, 6] = [direct(3), grad(3)]."
+            )
+        if target.dim() != 2 or target.shape[1] != 3:
+            raise ValueError("DualForcesLoss expects target shape [N, 3].")
+
+        direct = pred[:, :3]
+        grad = pred[:, 3:]
+        loss_direct = self.direct_loss(direct, target, mult_mask, natoms)
+        loss_grad = self.grad_loss(grad, target, mult_mask, natoms)
+        return loss_direct + loss_grad
+
+
 class DDPLoss(nn.Module):
     """
     This class is a wrapper around a loss function that does a few things

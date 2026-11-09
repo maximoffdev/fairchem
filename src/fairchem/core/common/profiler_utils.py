@@ -88,8 +88,10 @@ class ProfilerCallback(Callback):
             if WandBSingletonLogger.initialized()
             else None
         )
+        # timestamp_id, not run_name: the trace name is also the wandb artifact name,
+        # which wandb caps at 128 characters.
         handler = get_default_profiler_handler(
-            run_id=job_config.run_name,
+            run_id=job_config.timestamp_id,
             output_dir=profile_dir,
             logger=logger,
             all_ranks=all_ranks,

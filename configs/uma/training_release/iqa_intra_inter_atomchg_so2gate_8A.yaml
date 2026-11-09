@@ -1,0 +1,17 @@
+# Rerun of le-1-1-mean_and_rmsd_norm_all_train-with_ref_atomchargecond_sigma0.02_
+# lagcut5e-4_otf_300neighbors_8A_40h with the exactly roll-equivariant SO(2) head
+# activation. Everything else is that run's config: iqa_intra_inter_atomchg_pretrain
+# at an 8 A cutoff (verified leaf by leaf against its resume.yaml).
+# See IQA_RERUNS_2026-10.md for the run matrix and the submit command.
+defaults:
+  - iqa_intra_inter_atomchg_pretrain
+  - _self_
+
+job:
+  run_name: le-1-1-mean_and_rmsd_norm_all_train-with_ref_so2gate_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_8A_40h
+
+cutoff_radius: 8.0  # A; otf graph and radial basis cutoff
+
+heads:
+  iqa_combined_head:
+    activation_type: so2_gate

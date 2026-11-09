@@ -1,0 +1,12 @@
+# Dipole run with sigma 0.1: as iqa_dipole_atomchg_pretrain.yaml (sigma 0.02) with 5x
+# the noise on the q(A) input.
+defaults:
+  - iqa_dipole_atomchg_pretrain
+  - _self_
+
+job:
+  run_name: dipole-atomchargecond_sigma0.1_lagcut5e-4_otf_300neighbors_9A_40h
+
+dataset:
+  iqa_train:
+    sigma_atomic_charge: 0.1

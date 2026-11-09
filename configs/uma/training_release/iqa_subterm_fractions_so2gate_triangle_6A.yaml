@@ -1,0 +1,18 @@
+# iqa_subterm_fractions_so2gate_6A with AlphaFold3 triangle self-attention in the
+# shared head trunk instead of the per-edge graph attention: the message of edge (A,B)
+# mixes in the edges (A,C) / (C,B) of every atom C closing a triangle with A and B.
+# Everything else, including the validation MAEs, is inherited.
+# See IQA_SUBTERMS_CX_2026-10.md.
+defaults:
+  - iqa_subterm_fractions_so2gate_6A
+  - _self_
+
+job:
+  run_name: le-subterm_fractions_sharedtrunk_so2gate_triangleattn_atomchargecond_sigma0.02_lagcut5e-4_otf_300neighbors_6A_36h
+
+heads:
+  iqa_subterms_head:
+    attention_type: triangle
+    # mean: atoms average the messages of their incoming edges (the default).
+    # attention: weight them with the per-head softmax attention of the graph head.
+    triangle_node_aggregation: mean

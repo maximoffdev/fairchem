@@ -1,0 +1,17 @@
+# Rerun of le-subterms_sharedtrunk_strictlocal_sqrtdeg_sigmoidattn_atomchargecond_
+# sigma0.05_lagcut5e-4_otf_300neighbors_8A_40h with the exactly roll-equivariant SO(2)
+# head activation. Everything else is that run's config,
+# iqa_subterms_atomchg_local_pretrain (verified leaf by leaf against its resume.yaml).
+# See IQA_RERUNS_2026-10.md.
+defaults:
+  - iqa_subterms_atomchg_local_pretrain
+  - _self_
+
+job:
+  run_name: le-subterms_sharedtrunk_strictlocal_sqrtdeg_sigmoidattn_so2gate_atomchargecond_sigma0.05_lagcut5e-4_otf_300neighbors_8A_40h
+
+cutoff_radius: 8.0  # A; otf graph and radial basis cutoff
+
+heads:
+  iqa_subterms_head:
+    activation_type: so2_gate
